@@ -20,6 +20,19 @@ NODES = {
 }.freeze
 # Total 18 GB of the host's ~30.8 GB, leaving ~12 GB for Windows.
 
+# How the nodes reach each other. VirtualBox 7.2.x has open, unfixed networking
+# regressions on Windows hosts (GitHub VirtualBox/virtualbox#136, #345) where
+# guests hang while bringing a NIC up. This switch exists to isolate that.
+#
+#   :hostonly - normal. Host reaches the nodes directly at 192.168.56.x.
+#               Goes through the Windows NDIS filter driver (VBoxNetLwf).
+#   :intnet   - VirtualBox's internal switch. Node-to-node still works and the
+#               Windows host network stack is bypassed entirely. The host can no
+#               longer reach the nodes on that subnet, so kubectl needs a
+#               forwarded port.
+#   :none     - diagnostic only. NAT only, no second NIC, no cluster network.
+CLUSTER_NET = :hostonly
+
 BOX         = "rockylinux/9"
 BOX_VERSION = "5.0.0"   # pinned so the build is reproducible.
                         # NOT 6.0.0: the registry lists it as active but the
@@ -46,7 +59,16 @@ PREREQS = <<~'SHELL'
   dnf install -y -q chrony curl tar iproute
   systemctl enable --now chronyd
 
-  dnf update -y -q
+  # Userspace gets patched; the kernel does NOT.
+  #
+  # Installing a newer kernel and rebooting hangs the guest roughly 7.5s in,
+  # right after device init and before the root pivot — no systemd, no sshd,
+  # so Vagrant sits at "Waiting for machine to boot" until it times out. It
+  # happens with or without the second NIC, so it is not a networking fault.
+  # VirtualBox runs under Hyper-V's platform here (NEM in VBox.log) rather than
+  # native AMD-V, and the box's own kernel is the one known to boot in that
+  # environment. Pin it.
+  dnf update -y -q --exclude=kernel*
 
   # --- report what this guest can actually do ---------------------------
   echo "=============================================================="
@@ -78,7 +100,11 @@ SHELL
 Vagrant.configure("2") do |config|
   config.vm.box          = BOX
   config.vm.box_version  = BOX_VERSION
-  config.vm.boot_timeout = 600
+  # Generous, deliberately. VirtualBox has no AMD-V here and falls back to
+  # NEM (Windows Hypervisor Platform), where every VM exit is expensive and
+  # boots can run many minutes. At the default timeout Vagrant gives up on a
+  # guest that is still booting, which is indistinguishable from a hang.
+  config.vm.boot_timeout = 1800
 
   # The box ships without Guest Additions, so shared folders would fail.
   config.vm.synced_folder ".", "/vagrant", disabled: true
@@ -92,12 +118,37 @@ Vagrant.configure("2") do |config|
   NODES.each_with_index do |(name, (ip, cpus, memory)), index|
     config.vm.define name, primary: (index.zero?) do |node|
       node.vm.hostname = name
-      node.vm.network "private_network", ip: ip
+
+      case CLUSTER_NET
+      when :hostonly
+        node.vm.network "private_network", ip: ip
+      when :intnet
+        node.vm.network "private_network", ip: ip, virtualbox__intnet: "k3slab"
+      when :none
+        # No cluster NIC. Boots on NAT alone, for isolating network faults.
+      else
+        raise "CLUSTER_NET must be :hostonly, :intnet or :none"
+      end
 
       node.vm.provider "virtualbox" do |vb|
         vb.name   = name
         vb.cpus   = cpus
         vb.memory = memory
+
+        # Give the guest the KVM paravirtualised clock. VirtualBox picks
+        # "legacy" for a generic Linux_64 guest, which leaves it reading raw
+        # TSC; under Hyper-V compatibility mode that drifts, the kernel's
+        # clocksource watchdog declares TSC unstable, and the boot can hang
+        # before sshd finishes coming up.
+        vb.customize ["modifyvm", :id, "--paravirtprovider", "kvm"]
+
+        # REQUIRED for vb.cpus > 1. VirtualBox needs the I/O APIC to run an SMP
+        # guest; with it off it silently hands the guest a single CPU and
+        # ignores the cpus setting entirely — no warning anywhere. The box
+        # ships with ioapic off and Vagrant does not turn it on, so a node
+        # configured for 4 vCPUs boots with 1, and everything crawls.
+        #   Verify in the guest: nproc  (must match the NODES table)
+        vb.customize ["modifyvm", :id, "--ioapic", "on"]
       end
 
       node.vm.provision "hosts",   type: "shell", inline: hosts_script

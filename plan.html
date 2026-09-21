@@ -328,7 +328,6 @@
     <div class="meta-row">
       <span><b>Host</b> Ryzen 7 9800X3D · 30.8 GB · Windows 11 Pro</span>
       <span><b>Guests</b> Rocky Linux 9 · 3 × 4 vCPU / 6 GB</span>
-      <span><b>Status</b> phase 3 of 9 · nodes verified</span>
     </div>
   </header>
 
@@ -466,12 +465,11 @@
 
     <div class="phases">
 
-      <div class="phase" data-state="done">
+      <div class="phase">
         <div class="ph-num">01</div>
         <div>
           <div class="ph-head">
             <h3 class="ph-title">Toolchain</h3>
-            <span class="pill done">Done</span>
           </div>
           <p class="ph-body">
             Vagrant and VirtualBox installed and verified compatible, project under git.
@@ -484,12 +482,11 @@
         </div>
       </div>
 
-      <div class="phase" data-state="done">
+      <div class="phase">
         <div class="ph-num">02</div>
         <div>
           <div class="ph-head">
             <h3 class="ph-title">Three Rocky Linux nodes</h3>
-            <span class="pill done">Done</span>
           </div>
           <p class="ph-body">
             One Vagrantfile builds all three: static host-only IPs, swap off, firewalld off,
@@ -508,10 +505,12 @@
             don't trust the metadata.
           </div>
           <div class="ph-detail">
-            <span class="k">Outstanding</span>
-            <code>dnf update</code> pulled a newer kernel but the nodes still run
-            <code>5.14.0-503.14.1.el9_5</code>. One <code>vagrant reload</code> boots the
-            updated one — worth doing before k3s goes on.
+            <span class="k">Clock, not cosmetics</span>
+            VirtualBox assigns a generic Linux guest the <code>legacy</code> paravirt
+            provider, leaving it to read raw TSC. Under Hyper-V compatibility mode that
+            drifts, the kernel's clocksource watchdog declares TSC unstable, and the boot
+            hangs before sshd is up. The Vagrantfile forces
+            <code>--paravirtprovider kvm</code> so the guest gets <code>kvm-clock</code>.
           </div>
         </div>
       </div>
@@ -521,7 +520,6 @@
         <div>
           <div class="ph-head">
             <h3 class="ph-title">k3s cluster</h3>
-            <span class="pill">Next</span>
           </div>
           <p class="ph-body">
             One server, two agents, default Flannel CNI. OVN-Kubernetes was considered and
@@ -540,7 +538,6 @@
         <div>
           <div class="ph-head">
             <h3 class="ph-title">Gateway API Inference Extension</h3>
-            <span class="pill rev">Revised</span>
           </div>
           <p class="ph-body">
             Originally "install vLLM on all nodes." That was two mistakes: vLLM can't run here,
@@ -554,9 +551,7 @@
         <div class="ph-num">05</div>
         <div>
           <div class="ph-head">
-            <h3 class="ph-title">llm-d on the cluster</h3>
-            <span class="pill">Planned</span>
-          </div>
+            <h3 class="ph-title">llm-d on the cluster</h3>          </div>
           <p class="ph-body">
             Helm-installed, with model-server pods backed by the simulator instead of real vLLM.
             The gateway, endpoint picker and routing layer are all genuine.
@@ -572,9 +567,7 @@
         <div class="ph-num">06</div>
         <div>
           <div class="ph-head">
-            <h3 class="ph-title">Tune llm-d</h3>
-            <span class="pill">Planned</span>
-          </div>
+            <h3 class="ph-title">Tune llm-d</h3>          </div>
           <p class="ph-body">
             KV-cache-aware routing, prefill/decode disaggregation, replica scaling. The
             simulator's configurable latency model makes routing decisions observable in a
@@ -587,9 +580,7 @@
         <div class="ph-num">07</div>
         <div>
           <div class="ph-head">
-            <h3 class="ph-title">ollama, real inference</h3>
-            <span class="pill">Planned</span>
-          </div>
+            <h3 class="ph-title">ollama, real inference</h3>          </div>
           <p class="ph-body">
             A small model — 1B class, quantised — actually generating tokens on CPU. Slow by
             design, and the honest counterweight to the simulated path.
@@ -606,9 +597,7 @@
         <div class="ph-num">08</div>
         <div>
           <div class="ph-head">
-            <h3 class="ph-title">A real workload</h3>
-            <span class="pill">Planned</span>
-          </div>
+            <h3 class="ph-title">A real workload</h3>          </div>
           <p class="ph-body">
             Drive both endpoints with something that isn't a curl one-liner — concurrent
             traffic with realistic prompt-length distribution, so the routing layer has
@@ -621,9 +610,7 @@
         <div class="ph-num">09</div>
         <div>
           <div class="ph-head">
-            <h3 class="ph-title">Observability and findings</h3>
-            <span class="pill">Planned</span>
-          </div>
+            <h3 class="ph-title">Observability and findings</h3>          </div>
           <p class="ph-body">
             Prometheus and Grafana against the vLLM-compatible metrics the simulator emits:
             time-to-first-token, inter-token latency, queue depth, cache hit rate. This phase

@@ -63,22 +63,6 @@ silently. Both flags are mandatory:
 --node-ip=192.168.56.x --flannel-iface=eth1
 ```
 
-## Progress
-
-| Phase | Status |
-|---|---|
-| 1. Toolchain | Done |
-| 2. Three Rocky Linux nodes | Done |
-| 3. k3s cluster | Next |
-| 4. Gateway API Inference Extension | Planned |
-| 5. llm-d on the cluster | Planned |
-| 6. Tune llm-d | Planned |
-| 7. ollama, real inference | Planned |
-| 8. A real workload | Planned |
-| 9. Observability and findings | Planned |
-
-Full reasoning, decision log and verification gates live in [`plan.html`](plan.html).
-
 ## Notes
 
 - **No storage layer.** Rook/Ceph was scoped out — three OSDs on one SSD gives no real
