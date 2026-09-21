@@ -1,0 +1,14 @@
+# Keep LF endings everywhere, including in Windows working copies.
+#
+# This is not cosmetic. The Vagrantfile embeds shell scripts that run on the
+# Rocky guests. If Git checks the file out with CRLF on a Windows clone, those
+# scripts reach bash carrying \r and fail with confusing "command not found"
+# and "bad interpreter" errors.
+* text=auto eol=lf
+
+# Binary formats Git must never touch.
+*.box  binary
+*.vdi  binary
+*.vmdk binary
+*.png  binary
+*.jpg  binary

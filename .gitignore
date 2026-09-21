@@ -1,0 +1,21 @@
+# Vagrant machine state (machine IDs, generated SSH keys)
+.vagrant/
+*.log
+
+# Never commit cluster credentials — k3s.yaml embeds admin certs,
+# and the node-token is a join secret.
+kubeconfig
+*kubeconfig*
+k3s.yaml
+node-token
+
+# Virtual disks, should they ever land in the project folder
+*.vdi
+*.vmdk
+*.box
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
