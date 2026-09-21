@@ -8,6 +8,7 @@ kubeconfig
 *kubeconfig*
 k3s.yaml
 node-token
+.k3s-token
 
 # Virtual disks, should they ever land in the project folder
 *.vdi

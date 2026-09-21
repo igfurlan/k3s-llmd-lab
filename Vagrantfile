@@ -38,6 +38,30 @@ BOX_VERSION = "5.0.0"   # pinned so the build is reproducible.
                         # NOT 6.0.0: the registry lists it as active but the
                         # .box artifact 404s. 5.0.0 and 4.0.0 download fine.
 
+K3S_VERSION = "v1.36.4+k3s1"   # stable channel as of 2026-09-21
+
+# The first node in NODES is the control plane; the rest join it as agents.
+SERVER_NAME = NODES.keys.first
+SERVER_IP   = NODES[SERVER_NAME][0]
+
+# Cluster join secret.
+#
+# Generated once on first use and kept in .k3s-token, which .gitignore excludes.
+# Anyone holding this can join a node to the cluster, so it must never be
+# committed — hardcoding it here would publish a credential to a public repo.
+# Delete the file to roll the token; the cluster then needs rebuilding.
+require "securerandom"
+TOKEN_FILE = File.join(__dir__, ".k3s-token")
+K3S_TOKEN  =
+  if File.exist?(TOKEN_FILE) && !File.read(TOKEN_FILE).strip.empty?
+    File.read(TOKEN_FILE).strip
+  else
+    SecureRandom.hex(32).tap do |t|
+      File.write(TOKEN_FILE, t + "\n")
+      File.chmod(0o600, TOKEN_FILE) rescue nil
+    end
+  end
+
 # /etc/hosts entries for every node. Built as plain lines to keep the
 # shell script free of heredoc-escaping surprises.
 hosts_script = "set -eu\nsed -i '/# vagrant-k3s-lab$/d' /etc/hosts\n"
@@ -97,6 +121,86 @@ PREREQS = <<~'SHELL'
   echo "=============================================================="
 SHELL
 
+# --- k3s control plane -------------------------------------------------------
+#
+# --node-ip and --flannel-iface are mandatory here, not tuning. Every Vagrant VM
+# carries a NAT adapter at 10.0.2.15 — the same address on all three machines —
+# and k3s picks its node IP from the default route, which points there. Without
+# these flags all three nodes register as 10.0.2.15, the cluster forms, and pod
+# networking then fails in ways that look like anything but a networking problem.
+#
+# traefik is disabled because llm-d brings its own Envoy-based gateway; two
+# ingress controllers competing for 80/443 through ServiceLB is a bad time.
+# ServiceLB itself stays enabled so that gateway can still get an external IP.
+K3S_SERVER = <<~SHELL
+  set -euo pipefail
+
+  if systemctl is-active --quiet k3s; then
+    echo "k3s server already running — skipping install."
+  else
+    echo "Installing k3s #{K3S_VERSION} (server) ..."
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION="#{K3S_VERSION}" \
+      K3S_TOKEN="#{K3S_TOKEN}" \
+      INSTALL_K3S_EXEC="server \
+        --node-ip=#{SERVER_IP} \
+        --flannel-iface=eth1 \
+        --tls-san=#{SERVER_IP} \
+        --disable=traefik \
+        --write-kubeconfig-mode=0644" \
+      sh -
+  fi
+
+  # k3s installs to /usr/local/bin, which is NOT on the PATH inside Vagrant's
+  # provisioner shell. Call it by absolute path.
+  K3S=/usr/local/bin/k3s
+
+  # Agents are provisioned next and will try to join immediately, so do not
+  # return until the API actually answers.
+  echo -n "Waiting for the API server "
+  for i in $(seq 1 90); do
+    if $K3S kubectl get --raw=/readyz >/dev/null 2>&1; then echo " ready"; break; fi
+    echo -n "."
+    sleep 5
+  done
+
+  $K3S kubectl get nodes -o wide
+SHELL
+
+# --- k3s agents --------------------------------------------------------------
+k3s_agent = lambda do |ip|
+  <<~SHELL
+    set -euo pipefail
+
+    if systemctl is-active --quiet k3s-agent; then
+      echo "k3s agent already running — skipping install."
+      exit 0
+    fi
+
+    echo -n "Waiting for #{SERVER_IP}:6443 "
+    for i in $(seq 1 90); do
+      # Any HTTP response means the port is serving; 401 is a fine answer here.
+      if curl -sk --max-time 3 -o /dev/null https://#{SERVER_IP}:6443/ 2>/dev/null; then
+        echo " up"; break
+      fi
+      echo -n "."
+      sleep 5
+    done
+
+    echo "Installing k3s #{K3S_VERSION} (agent) ..."
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION="#{K3S_VERSION}" \
+      K3S_URL="https://#{SERVER_IP}:6443" \
+      K3S_TOKEN="#{K3S_TOKEN}" \
+      INSTALL_K3S_EXEC="agent \
+        --node-ip=#{ip} \
+        --flannel-iface=eth1" \
+      sh -
+
+    systemctl is-active k3s-agent && echo "joined #{SERVER_IP} as #{ip}"
+  SHELL
+end
+
 Vagrant.configure("2") do |config|
   config.vm.box          = BOX
   config.vm.box_version  = BOX_VERSION
@@ -153,6 +257,12 @@ Vagrant.configure("2") do |config|
 
       node.vm.provision "hosts",   type: "shell", inline: hosts_script
       node.vm.provision "prereqs", type: "shell", inline: PREREQS
+
+      if name == SERVER_NAME
+        node.vm.provision "k3s", type: "shell", inline: K3S_SERVER
+      else
+        node.vm.provision "k3s", type: "shell", inline: k3s_agent.call(ip)
+      end
     end
   end
 end
