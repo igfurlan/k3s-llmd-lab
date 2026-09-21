@@ -391,6 +391,8 @@
     <p style="font-size:0.9rem;color:var(--ink-3);">
       18 GB of 30.8 GB committed, leaving ~12 GB for Windows. Box pinned to
       <code>rockylinux/9 v5.0.0</code>; VM disks live on the NVMe, never the HDD.
+      Each node also carries a 30 GB disk mounted at <code>/var/lib/rancher</code>, because
+      the box's 8.9 GB root cannot hold containerd images, local-path volumes and a model.
     </p>
 
     <figure>
@@ -505,12 +507,22 @@
             don't trust the metadata.
           </div>
           <div class="ph-detail">
-            <span class="k">Clock, not cosmetics</span>
-            VirtualBox assigns a generic Linux guest the <code>legacy</code> paravirt
-            provider, leaving it to read raw TSC. Under Hyper-V compatibility mode that
-            drifts, the kernel's clocksource watchdog declares TSC unstable, and the boot
-            hangs before sshd is up. The Vagrantfile forces
-            <code>--paravirtprovider kvm</code> so the guest gets <code>kvm-clock</code>.
+            <span class="k">Cost four hours</span>
+            Every boot after the first appeared to hang. The cause was one setting:
+            <code>ioapic=off</code>. VirtualBox requires the I/O APIC to run an SMP guest
+            and, without it, silently hands over a <strong>single</strong> CPU while
+            reporting four — no warning, no log line. On one vCPU under a nested
+            hypervisor, boots outran Vagrant's timeout, which is indistinguishable from a
+            hang. Enabling it took boot from <em>exceeding 600s</em> to <strong>72.8s</strong>.
+            Written up in <a href="https://github.com/igfurlan/k3s-llmd-lab/blob/main/postmortem-vagrant.md">postmortem-vagrant.md</a>.
+          </div>
+          <div class="ph-detail">
+            <span class="k">Also configured</span>
+            <code>--paravirtprovider kvm</code> for <code>kvm-clock</code> (a generic Linux
+            guest otherwise reads raw TSC, which drifts badly under a nested hypervisor) ·
+            <code>boot_timeout 1800</code>, because boots here are legitimately slow ·
+            a 30 GB second disk mounted at <code>/var/lib/rancher</code>, since the box's
+            8.9 GB root cannot hold the container images this stack needs.
           </div>
         </div>
       </div>
@@ -522,13 +534,30 @@
             <h3 class="ph-title">k3s cluster</h3>
           </div>
           <p class="ph-body">
-            One server, two agents, default Flannel CNI. OVN-Kubernetes was considered and
-            rejected — see decisions below.
+            One server, two agents, default Flannel CNI, installed by the Vagrantfile itself —
+            so <code>vagrant destroy -f &amp;&amp; vagrant up</code> rebuilds the entire cluster
+            from nothing. OVN-Kubernetes was considered and rejected; see decisions below.
           </p>
           <div class="ph-detail">
-            <span class="k">Must not skip</span>
-            <code>--node-ip</code> and <code>--flannel-iface</code> on every node, pointing at
-            the host-only interface. Without them the cluster forms and networking breaks quietly.
+            <span class="k">Server flags</span>
+            <code>--node-ip=192.168.56.11</code> · <code>--flannel-iface=eth1</code> ·
+            <code>--tls-san=192.168.56.11</code> · <code>--disable=traefik</code> ·
+            <code>--write-kubeconfig-mode=0644</code>. Version pinned to
+            <code>v1.36.4+k3s1</code>.
+          </div>
+          <div class="ph-detail">
+            <span class="k">Why the first two flags are mandatory</span>
+            k3s picks its node IP from the default route, which points at the NAT adapter —
+            <code>10.0.2.15</code> on all three machines. Without them every node registers
+            under the same address, the cluster forms anyway, and pod networking then fails
+            in ways that look like anything except a networking problem.
+          </div>
+          <div class="ph-detail">
+            <span class="k">Join token</span>
+            Generated once with <code>SecureRandom.hex(32)</code>, written to
+            <code>.k3s-token</code> at mode <code>0600</code>, and read back on every later
+            run. The file is gitignored: a join token is a credential, and this repository
+            is public. Hardcoding one in the Vagrantfile would have been simpler and wrong.
           </div>
         </div>
       </div>
@@ -542,8 +571,22 @@
           <p class="ph-body">
             Originally "install vLLM on all nodes." That was two mistakes: vLLM can't run here,
             and llm-d deploys vLLM as pods rather than as a node-level install. The real
-            prerequisite is the Inference Extension CRDs.
+            prerequisite is Gateway API plus the Inference Extension CRDs — the vocabulary
+            that lets a gateway reason about LLM traffic instead of treating it as generic HTTP.
           </p>
+          <div class="ph-detail">
+            <span class="k">Versions</span>
+            Gateway API <code>v1.4.0+</code> · Gateway API Inference Extension
+            <code>v1.6.2</code> (<code>v1-manifests.yaml</code> from the release) ·
+            Kubernetes <code>1.28+</code> required, cluster runs <code>1.36</code>.
+          </div>
+          <div class="ph-detail">
+            <span class="k">Gateway provider: agentgateway</span>
+            Three options exist. <code>kgateway</code> is deprecated and being removed.
+            <code>istio</code> is the documented default but heavy for 6 GB nodes.
+            <code>agentgateway</code> is where the project is heading, so the lab starts
+            there rather than learning a path that is on its way out.
+          </div>
         </div>
       </div>
 
@@ -553,12 +596,20 @@
           <div class="ph-head">
             <h3 class="ph-title">llm-d on the cluster</h3>          </div>
           <p class="ph-body">
-            Helm-installed, with model-server pods backed by the simulator instead of real vLLM.
-            The gateway, endpoint picker and routing layer are all genuine.
+            Helm-installed from the <code>llm-d-infra</code> chart, with model-server pods
+            backed by the simulator instead of real vLLM. The gateway, the endpoint picker
+            and the routing layer are all genuine — only the tensor math is substituted.
           </p>
           <div class="ph-detail">
-            <span class="k">Image</span>
-            <code>ghcr.io/llm-d/llm-d-inference-sim</code>
+            <span class="k">Components</span>
+            Chart <code>llm-d-infra</code> from
+            <code>llm-d-incubation.github.io/llm-d-infra</code> · model servers
+            <code>ghcr.io/llm-d/llm-d-inference-sim:v0.9.0</code>.
+          </div>
+          <div class="ph-detail">
+            <span class="k">One prerequisite we escape</span>
+            The official quickstart needs a HuggingFace token to pull model weights. The
+            simulator downloads nothing, so no token and no secret to manage.
           </div>
         </div>
       </div>
@@ -573,6 +624,25 @@
             simulator's configurable latency model makes routing decisions observable in a
             way a real GPU under load would not.
           </p>
+          <div class="ph-detail">
+            <span class="k">Prefill and decode, split across the two agents</span>
+            The two phases of inference have opposite performance profiles.
+            <strong>Prefill</strong> processes the whole prompt in one parallel pass and is
+            compute-bound; <strong>decode</strong> emits tokens one at a time and is
+            memory-bandwidth-bound. Sharing a pod means sizing for neither. Splitting them
+            lets each scale and be placed independently — on real hardware, prefill on
+            high-compute accelerators and decode on high-bandwidth ones.
+          </div>
+          <div class="ph-detail">
+            <span class="k">How the lab does it</span>
+            <code>k3s-agent-1</code> is labelled <code>llm-d.ai/role=prefill</code> and
+            <code>k3s-agent-2</code> <code>llm-d.ai/role=decode</code>; <code>nodeSelector</code>
+            pins each deployment. <code>kubectl get pods -o wide</code> then makes the
+            architecture visible. In production the KV cache must physically move between
+            the two, which llm-d does over NIXL — here that transfer is modelled, not real.
+            The configuration surface and the routing are genuine; the speedup is not, and
+            the write-up says so.
+          </div>
         </div>
       </div>
 
@@ -674,9 +744,44 @@
       <div class="dec">
         <div class="dec-q">Storage</div>
         <div class="dec-a">
-          <span class="chose">None beyond local-path</span>. Rook/Ceph became its own project:
-          three OSDs on one SSD gives no real redundancy, and Ceph's default 4 GB
-          <code>osd_memory_target</code> would OOM these nodes.
+          <span class="chose">local-path, on a dedicated disk</span>. Rook/Ceph became its own
+          project: three OSDs on one SSD gives no real redundancy, and Ceph's default 4 GB
+          <code>osd_memory_target</code> would OOM these nodes. But the box's 8.9 GB root
+          cannot hold this stack's images, so each node gets a 30 GB disk mounted at
+          <code>/var/lib/rancher</code> — containerd, the kubelet and local-path PVs all
+          live there. Dynamically allocated, so the unused space costs nothing.
+        </div>
+      </div>
+
+      <div class="dec">
+        <div class="dec-q">Gateway provider</div>
+        <div class="dec-a">
+          <span class="chose">agentgateway</span>, not Istio or kgateway. kgateway is
+          deprecated and scheduled for removal, so learning it would be learning a dead path.
+          Istio is the documented default but carries a footprint these 6 GB nodes would
+          feel. agentgateway is where llm-d is heading — newer and less documented, which is
+          a real cost, but the right thing to be fluent in.
+        </div>
+      </div>
+
+      <div class="dec">
+        <div class="dec-q">Secrets</div>
+        <div class="dec-a">
+          <span class="chose">Generated, never committed</span>. The k3s join token is
+          produced at build time into a gitignored file rather than written into the
+          Vagrantfile. Same for the kubeconfig, which carries admin certificates. A public
+          repository that rebuilds a whole cluster from one command must not also hand over
+          the keys to it.
+        </div>
+      </div>
+
+      <div class="dec">
+        <div class="dec-q">Working with the cluster</div>
+        <div class="dec-a">
+          <span class="chose">kubectl from inside the cluster</span>. No local kubectl on the
+          Windows host — <code>vagrant ssh k3s-server</code> and work there. One less
+          kubeconfig to keep in sync, and no risk of pointing the wrong context at a
+          different cluster.
         </div>
       </div>
 

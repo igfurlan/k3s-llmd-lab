@@ -214,6 +214,44 @@ nothing when boot is running 10× slow.
 
 ---
 
+## Gotcha: `/usr/local/bin` is not on the PATH in a Vagrant provisioner
+
+The k3s installer puts its binaries in `/usr/local/bin`:
+
+```
+[INFO]  Installing k3s to /usr/local/bin/k3s
+[INFO]  Creating /usr/local/bin/kubectl symlink to k3s
+```
+
+That directory is on a normal interactive login's PATH, so `k3s kubectl get nodes`
+works fine over `vagrant ssh`. It is **not** on the PATH of the non-interactive
+shell Vagrant uses for `provision`, so the same command inside a provisioner
+fails:
+
+```
+/tmp/vagrant-shell: line 19: k3s: command not found
+```
+
+The install had succeeded. Only the verification block that followed it broke —
+and because that block was a `for` loop polling readiness, it silently burned all
+90 iterations before exiting non-zero and failing the whole provisioner. The
+symptom (a long wait, then failure) looked nothing like the cause (a missing
+PATH entry).
+
+**Fix:** call it by absolute path in any provisioner script.
+
+```bash
+K3S=/usr/local/bin/k3s
+$K3S kubectl get --raw=/readyz
+```
+
+**General rule:** a provisioner shell is not a login shell. Anything installed
+outside `/usr/bin` or `/bin` needs an absolute path or an explicit `PATH` export.
+The same applies to `helm`, `kubectl` and anything else installed by a script
+later in this project.
+
+---
+
 ## Also fixed this phase
 
 **Box version 6.0.0 returns 404.** The Vagrant Cloud registry lists

@@ -40,6 +40,14 @@ BOX_VERSION = "5.0.0"   # pinned so the build is reproducible.
 
 K3S_VERSION = "v1.36.4+k3s1"   # stable channel as of 2026-09-21
 
+# Second disk per node, mounted at /var/lib/rancher.
+#
+# The box's root filesystem is 8.9 GB. k3s puts containerd images, the kubelet
+# and local-path PVs under /var/lib/rancher, and the llm-d stack plus an ollama
+# model will not fit in what is left. Dynamically allocated, so an unused disk
+# costs almost nothing on the host.
+DATA_DISK = "30GB"
+
 # The first node in NODES is the control plane; the rest join it as agents.
 SERVER_NAME = NODES.keys.first
 SERVER_IP   = NODES[SERVER_NAME][0]
@@ -119,6 +127,48 @@ PREREQS = <<~'SHELL'
     *)        echo "   -> NO AVX AT ALL: expect poor ollama performance." ;;
   esac
   echo "=============================================================="
+SHELL
+
+# --- container storage -------------------------------------------------------
+#
+# Must run BEFORE k3s installs, otherwise images land on the root filesystem and
+# mounting over them afterwards hides them.
+STORAGE = <<~'SHELL'
+  set -euo pipefail
+  DISK=/dev/sdb
+  MOUNT=/var/lib/rancher
+
+  if [ ! -b "$DISK" ]; then
+    echo "*** WARNING: $DISK is not present. The extra disk was not attached."
+    echo "*** k3s will fall back to the ~9 GB root filesystem and may run out."
+    exit 0
+  fi
+
+  if mountpoint -q "$MOUNT"; then
+    echo "$MOUNT already mounted:"
+    df -h "$MOUNT" | tail -1
+    exit 0
+  fi
+
+  # blkid succeeds only if the device already carries a filesystem.
+  if ! blkid "$DISK" >/dev/null 2>&1; then
+    echo "Formatting $DISK as xfs ..."
+    mkfs.xfs -q -f "$DISK"
+  fi
+
+  UUID=$(blkid -s UUID -o value "$DISK")
+  mkdir -p "$MOUNT"
+
+  # Mount by UUID: device names can reorder across boots, and a wrong entry
+  # here stops the node booting.
+  if ! grep -q "$UUID" /etc/fstab; then
+    echo "UUID=$UUID $MOUNT xfs defaults,noatime 0 2" >> /etc/fstab
+  fi
+
+  mount "$MOUNT"
+  restorecon -R "$MOUNT" 2>/dev/null || true
+  echo "container storage ready:"
+  df -h "$MOUNT" | tail -1
 SHELL
 
 # --- k3s control plane -------------------------------------------------------
@@ -255,8 +305,12 @@ Vagrant.configure("2") do |config|
         vb.customize ["modifyvm", :id, "--ioapic", "on"]
       end
 
+      # Unformatted second disk; the storage provisioner claims it.
+      node.vm.disk :disk, size: DATA_DISK, name: "#{name}-data"
+
       node.vm.provision "hosts",   type: "shell", inline: hosts_script
       node.vm.provision "prereqs", type: "shell", inline: PREREQS
+      node.vm.provision "storage", type: "shell", inline: STORAGE
 
       if name == SERVER_NAME
         node.vm.provision "k3s", type: "shell", inline: K3S_SERVER
