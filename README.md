@@ -104,8 +104,33 @@ round-robin and blind; llm-d's scheduler routes on things that matter for LLMs �
 has the relevant KV cache warm, how deep each queue is, which LoRA adapters are loaded.
 None of that depends on the workers being real.
 
+Its policy is three weighted scorers, and the weights *are* the design decision:
+
+```yaml
+schedulingProfiles:
+- name: default
+  plugins:
+  - pluginRef: prefix-cache-scorer         # weight 3 — cache locality
+    weight: 3
+  - pluginRef: queue-scorer                # weight 2 — least busy
+    weight: 2
+  - pluginRef: kv-cache-utilization-scorer # weight 2 — cache headroom
+    weight: 2
+```
+
+Prefix-cache affinity outranks load balancing 3:2 — llm-d's thesis that a cache hit is worth
+more than an evenly distributed queue, expressed as three integers.
+[epp-scheduling.md](epp-scheduling.md) has the full walkthrough: the wiring, `failureMode`,
+what the payload-agnostic fallback reveals, and how to inspect a distroless EPP.
+
 Using the simulator also removes a prerequisite: the official quickstart needs a HuggingFace
 token to pull model weights, and the simulator downloads nothing.
+
+**The simulator is a swap, not a dead end.** The Gateway, HTTPRoute, InferencePool and
+metrics pipeline are identical whether the backend is simulated, a local ollama model, or
+Claude via Anthropic's API — only one resource changes.
+[model-backends.md](model-backends.md) has working YAML for all three, including how the
+API key is handled for the hosted case.
 
 ### Prefill/decode disaggregation
 

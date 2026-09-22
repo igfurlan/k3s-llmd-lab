@@ -611,6 +611,23 @@
             The official quickstart needs a HuggingFace token to pull model weights. The
             simulator downloads nothing, so no token and no secret to manage.
           </div>
+          <div class="ph-detail">
+            <span class="k">Dead ends worth recording</span>
+            <code>llm-d-modelservice</code> is deprecated — retained only for helmfile guides
+            before v0.7. The chart that matters is
+            <code>oci://ghcr.io/llm-d/charts/llm-d-router-gateway</code> at
+            <code>v0.10.0</code>, with <code>provider.name=none</code> because agentgateway
+            handles the InferencePool natively. Four wrong registry paths preceded it.
+          </div>
+          <div class="ph-detail">
+            <span class="k">The check that prevents version pain</span>
+            llm-d v0.9.0 pins Gateway API Inference Extension <code>v1.5.0</code> while this
+            cluster runs <code>v1.6.2</code>. Rather than guess,
+            <code>helm template … | grep apiVersion</code> showed the chart emits
+            <code>inference.networking.k8s.io/v1</code> — exactly what the cluster serves. The
+            v1 API is stable, so the pin was harmless. The same check beforehand would have
+            caught the agentgateway mismatch that cost an hour.
+          </div>
         </div>
       </div>
 
@@ -642,6 +659,17 @@
             the two, which llm-d does over NIXL — here that transfer is modelled, not real.
             The configuration surface and the routing are genuine; the speedup is not, and
             the write-up says so.
+          </div>
+          <div class="ph-detail">
+            <span class="k">Settled by reading the cluster, not the docs</span>
+            llm-d's GitHub guide describes two InferencePools for P/D; the llm-d.ai docs
+            describe one pool with two labelled Deployments. The running EPP config decides
+            it: <strong>one pool, two Deployments, and P/D is an EPP configuration concern</strong>.
+            The shipped config carries a single <code>default</code> scheduling profile and no
+            <code>disagg-profile-handler</code>, so the role labels are currently inert.
+            Adding them is what <code>router.epp.pluginsConfigFile</code> exists for.
+            Full detail in
+            <a href="https://github.com/igfurlan/k3s-llmd-lab/blob/main/epp-scheduling.md">epp-scheduling.md</a>.
           </div>
         </div>
       </div>
