@@ -34,6 +34,12 @@
 #   descheduled for seconds. See hyperv-migration-plan.md for the measurement,
 #   and archive/Vagrantfile.virtualbox for the configuration it replaces.
 
+# VirtualBox is still installed on this host and Vagrant would otherwise pick it
+# first, silently building the wrong kind of VM. Setting the default here means
+# plain `vagrant up` does the right thing; an explicit --provider still wins,
+# and so does a VAGRANT_DEFAULT_PROVIDER already set in the environment.
+ENV["VAGRANT_DEFAULT_PROVIDER"] ||= "hyperv"
+
 NODES = {
   # hostname       => [cluster ip,      cpus, memory_mb]
   "k3s-server"     => ["192.168.58.11",    4,      6144],
