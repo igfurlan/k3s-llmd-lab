@@ -9,8 +9,9 @@
 #   vagrant halt               # shut down, keep the VMs
 #   vagrant destroy -f         # delete everything
 #
-# Deliberately minimal: no extra disks, no storage layer. Rook/Ceph is a
-# separate project with its own (much larger) node requirements.
+# No distributed storage: Rook/Ceph is a separate project with much larger node
+# requirements. Each node does get a plain 30 GB disk for container storage,
+# because the box's 8.9 GB root cannot hold this stack's images.
 
 NODES = {
   # hostname       => [ip,              cpus, memory_mb]
@@ -20,9 +21,14 @@ NODES = {
 }.freeze
 # Total 18 GB of the host's ~30.8 GB, leaving ~12 GB for Windows.
 
-# How the nodes reach each other. VirtualBox 7.2.x has open, unfixed networking
-# regressions on Windows hosts (GitHub VirtualBox/virtualbox#136, #345) where
-# guests hang while bringing a NIC up. This switch exists to isolate that.
+# How the nodes reach each other.
+#
+# This switch was added to test whether a boot hang was caused by the host-only
+# adapter — VirtualBox 7.2.x does have open networking regressions on Windows
+# (VirtualBox/virtualbox#136, #345). Booting with :none disproved it: the guest
+# hung identically on NAT alone. The real cause was ioapic=off capping the guest
+# at one vCPU. The switch is kept because it is the fastest way to rule
+# networking in or out next time.
 #
 #   :hostonly - normal. Host reaches the nodes directly at 192.168.56.x.
 #               Goes through the Windows NDIS filter driver (VBoxNetLwf).
@@ -93,13 +99,12 @@ PREREQS = <<~'SHELL'
 
   # Userspace gets patched; the kernel does NOT.
   #
-  # Installing a newer kernel and rebooting hangs the guest roughly 7.5s in,
-  # right after device init and before the root pivot — no systemd, no sshd,
-  # so Vagrant sits at "Waiting for machine to boot" until it times out. It
-  # happens with or without the second NIC, so it is not a networking fault.
-  # VirtualBox runs under Hyper-V's platform here (NEM in VBox.log) rather than
-  # native AMD-V, and the box's own kernel is the one known to boot in that
-  # environment. Pin it.
+  # HONEST NOTE: this pin was added while chasing a boot hang that a new kernel
+  # appeared to trigger. That hypothesis was wrong — the hang was ioapic=off
+  # capping every guest at a single vCPU, which made boots exceed Vagrant's
+  # timeout. With the I/O APIC enabled a newer kernel will probably boot fine.
+  # The pin is retained only so that one variable changes at a time; it is due
+  # to be tested and most likely removed.
   dnf update -y -q --exclude=kernel*
 
   # --- report what this guest can actually do ---------------------------
@@ -185,19 +190,54 @@ SHELL
 K3S_SERVER = <<~SHELL
   set -euo pipefail
 
+  # Server settings live in /etc/rancher/k3s/config.yaml rather than in the
+  # installer's INSTALL_K3S_EXEC.
+  #
+  # Why: the install step below is skipped when k3s is already running, so
+  # flags baked into the installer can never change on an existing cluster —
+  # editing them here would silently do nothing. k3s re-reads config.yaml on
+  # every start, so this file is authoritative and a changed setting is picked
+  # up by restarting the service.
+  mkdir -p /etc/rancher/k3s
+  NEW=$(mktemp)
+  {
+    echo "node-ip: #{SERVER_IP}"
+    echo 'flannel-iface: eth1'
+    echo 'write-kubeconfig-mode: "0644"'
+    echo 'tls-san:'
+    echo "  - #{SERVER_IP}"
+    echo 'disable:'
+    # traefik: llm-d brings its own Envoy-based gateway, and two ingress
+    # controllers competing for 80/443 via ServiceLB is a bad time.
+    echo '  - traefik'
+    # metrics-server: on this host it sustained ~90% of a vCPU while failing
+    # its own scrapes, because the runtime is slow enough that scrapes never
+    # complete. That feedback loop took all three nodes NotReady at once.
+    # kubectl top is the only thing lost.
+    echo '  - metrics-server'
+  } > "$NEW"
+
+  CONFIG_CHANGED=no
+  if ! cmp -s "$NEW" /etc/rancher/k3s/config.yaml 2>/dev/null; then
+    mv "$NEW" /etc/rancher/k3s/config.yaml
+    CONFIG_CHANGED=yes
+    echo "k3s server config written/updated."
+  else
+    rm -f "$NEW"
+  fi
+
   if systemctl is-active --quiet k3s; then
-    echo "k3s server already running — skipping install."
+    echo "k3s server already running."
+    if [ "$CONFIG_CHANGED" = yes ]; then
+      echo "Config changed — restarting k3s to apply it."
+      systemctl restart k3s
+    fi
   else
     echo "Installing k3s #{K3S_VERSION} (server) ..."
     curl -sfL https://get.k3s.io | \
       INSTALL_K3S_VERSION="#{K3S_VERSION}" \
       K3S_TOKEN="#{K3S_TOKEN}" \
-      INSTALL_K3S_EXEC="server \
-        --node-ip=#{SERVER_IP} \
-        --flannel-iface=eth1 \
-        --tls-san=#{SERVER_IP} \
-        --disable=traefik \
-        --write-kubeconfig-mode=0644" \
+      INSTALL_K3S_EXEC="server" \
       sh -
   fi
 
@@ -207,14 +247,20 @@ K3S_SERVER = <<~SHELL
 
   # Agents are provisioned next and will try to join immediately, so do not
   # return until the API actually answers.
+  #
+  # Poll a real API call rather than /readyz: on this host /readyz can go green
+  # seconds before the API will actually serve requests, and the gap is long
+  # enough that the next command fails. Under set -e that aborts the whole
+  # multi-machine run and later nodes are silently skipped.
   echo -n "Waiting for the API server "
-  for i in $(seq 1 90); do
-    if $K3S kubectl get --raw=/readyz >/dev/null 2>&1; then echo " ready"; break; fi
+  for i in $(seq 1 120); do
+    if $K3S kubectl get nodes >/dev/null 2>&1; then echo " ready"; break; fi
     echo -n "."
     sleep 5
   done
 
-  $K3S kubectl get nodes -o wide
+  # Informational only — never fail the provisioner over a display command.
+  $K3S kubectl get nodes -o wide || echo "(API still settling; not a failure)"
 SHELL
 
 # --- k3s agents --------------------------------------------------------------
@@ -222,8 +268,29 @@ k3s_agent = lambda do |ip|
   <<~SHELL
     set -euo pipefail
 
+    # Same reasoning as the server: config.yaml is authoritative, so settings
+    # can change on an already-joined node.
+    mkdir -p /etc/rancher/k3s
+    NEW=$(mktemp)
+    {
+      echo "node-ip: #{ip}"
+      echo 'flannel-iface: eth1'
+    } > "$NEW"
+
+    CONFIG_CHANGED=no
+    if ! cmp -s "$NEW" /etc/rancher/k3s/config.yaml 2>/dev/null; then
+      mv "$NEW" /etc/rancher/k3s/config.yaml
+      CONFIG_CHANGED=yes
+    else
+      rm -f "$NEW"
+    fi
+
     if systemctl is-active --quiet k3s-agent; then
-      echo "k3s agent already running — skipping install."
+      echo "k3s agent already running."
+      if [ "$CONFIG_CHANGED" = yes ]; then
+        echo "Config changed — restarting k3s-agent to apply it."
+        systemctl restart k3s-agent
+      fi
       exit 0
     fi
 
@@ -242,9 +309,7 @@ k3s_agent = lambda do |ip|
       INSTALL_K3S_VERSION="#{K3S_VERSION}" \
       K3S_URL="https://#{SERVER_IP}:6443" \
       K3S_TOKEN="#{K3S_TOKEN}" \
-      INSTALL_K3S_EXEC="agent \
-        --node-ip=#{ip} \
-        --flannel-iface=eth1" \
+      INSTALL_K3S_EXEC="agent" \
       sh -
 
     systemctl is-active k3s-agent && echo "joined #{SERVER_IP} as #{ip}"
