@@ -1,7 +1,8 @@
 # Migration plan — VirtualBox → Hyper-V
 
-**Status:** not started. Written 2026-09-22 as a handoff, after the measurement below
-settled the question.
+**Status:** research complete, Vagrantfile written, not yet run. Written 2026-09-22 as a
+handoff, after the measurement below settled the question; the research section was filled
+in the same day from the Vagrant and box sources rather than from guesswork.
 
 ---
 
@@ -46,10 +47,11 @@ Roughly two thirds of the work, including everything that was hard to find:
 - **k3s configuration design.** Settings live in `/etc/rancher/k3s/config.yaml`, not in
   `INSTALL_K3S_EXEC`. k3s re-reads it on every start, so the Vagrantfile stays authoritative
   for an existing cluster; baked-in installer flags can never change after first install.
-- **`--node-ip` and `--flannel-iface=eth1` are mandatory.** Every Vagrant VM has a NAT
-  adapter at the same `10.0.2.15`; without these all nodes register under one address and pod
-  networking breaks in ways that look like anything but networking. **Re-verify the interface
-  names on `generic/rocky9`** — they may not be `eth0`/`eth1`.
+- **`--node-ip` and `--flannel-iface=eth1` are mandatory.** k3s takes its node IP from the
+  default route, which points at the adapter Vagrant manages — `10.0.2.15` on every VM under
+  VirtualBox, a re-randomised Default Switch lease under Hyper-V. Either way, without these
+  flags the nodes take the wrong identity and pod networking breaks in ways that look like
+  anything but networking. Interface names confirmed still `eth0`/`eth1` — see finding 4.
 - **Join token** generated with `SecureRandom.hex(32)` into a gitignored `.k3s-token`.
 - **`--disable=traefik`** (llm-d brings its own gateway) and **`--disable=metrics-server`**
   (pathological on a slow host; re-evaluate once Hyper-V is in — it may be fine again).
@@ -64,60 +66,121 @@ Roughly two thirds of the work, including everything that was hard to find:
 | Box | `rockylinux/9` v5.0.0 → **`generic/rocky9` v4.3.12** (the only Rocky box publishing a `hyperv` provider) |
 | Provider block | Drop `--ioapic` and `--paravirtprovider` — both are VirtualBox `modifyvm` calls and Hyper-V needs neither |
 | `boot_timeout` | 1800 was compensation for NEM; can likely return to the default |
-| Kernel pin | `dnf update --exclude=kernel*` existed only because of the vCPU bug. **Remove it and test** |
-| Data disk | `config.vm.disk` is VirtualBox-only. Needs a Hyper-V VHDX equivalent |
-| `CLUSTER_NET` switch | VirtualBox-specific (`virtualbox__intnet`). Rework or drop |
+| Kernel pin | `dnf update --exclude=kernel*` existed only because of the vCPU bug. **Removed** |
+| Data disk | **Dropped entirely** — this box's root is ~128 GB, so there is nothing to work around |
+| `CLUSTER_NET` switch | VirtualBox-specific (`virtualbox__intnet`). Dropped |
+| Subnet | `192.168.56.0/24` → **`192.168.58.0/24`**, because VirtualBox's host-only adapter still holds `192.168.56.1` on this host |
 | **Networking** | The real work — see below |
 
 ---
 
-## Research first, write second
+## Research findings
 
-Three things to verify before writing any Vagrantfile. Guessing at these is what cost the
-last two days.
+Three things had to be settled before a single line of Vagrantfile was worth writing.
+Guessing at this class of question is what cost the previous two days, so each answer below
+comes from the Vagrant source in `C:\Program Files\Vagrant\embedded\gems\gems\vagrant-2.4.9`
+(or its upstream copy) and from the box's own build configuration — not from a blog post and
+not from inference.
 
-### 1. Two network adapters
+### 1. Two network adapters — confirmed impossible declaratively, and worked around
 
-We need what VirtualBox gave us for free: **NAT for internet** plus a **stable cluster
-network** at `192.168.56.x`. Vagrant's Hyper-V provider is materially less capable than its
-VirtualBox one and historically attaches only **one** adapter.
+`plugins/providers/hyperv/action/configure.rb` builds exactly one `SwitchID` and hands it to
+`configure_vm.ps1`. There is no second adapter anywhere in the provider's option set. But the
+same file answers a question the documentation does not:
 
-Likely shape:
-- Adapter 1: Hyper-V **Default Switch** (NAT, internet, dynamic IP — fine, we don't route on it)
-- Adapter 2: a host **Internal switch** created once with
-  `New-VMSwitch -Name k3s-lab -SwitchType Internal`, host side given `192.168.56.1/24`,
-  guests assigned static `192.168.56.11-13` by a provisioner
+```ruby
+env[:machine].config.vm.networks.each do |type, opts|
+  next if type != :public_network && type != :private_network
+  if opts[:bridge]
+    switch = switches.find{ |s|
+      s["Name"].downcase == opts[:bridge].to_s.downcase || ...
+```
 
-Open: whether Vagrant can attach the second adapter declaratively, or whether it needs a
-`config.trigger.after :up` calling `Add-VMNetworkAdapter` on the host. **Verify before
-writing.**
+So `bridge:` **does** pick the switch by name, declaratively. Without it, Vagrant stops and
+asks interactively as soon as the host has more than one switch — which it will, as soon as
+we create ours.
 
-### 2. Extra disk
+Three facts then decide the whole design:
 
-`config.vm.disk` will not work. Options: a trigger calling `New-VHD` + `Add-VMHardDiskDrive`,
-or dropping the second disk if `generic/rocky9`'s root is large enough. Check its root size
-first — `rockylinux/9` shipped 8.9 GB, which was the reason for the disk.
+| Source | What it means |
+|---|---|
+| `VagrantVM.psm1`, `Set-VagrantVMSwitch`: `$Adapter = Get-VMNetworkAdapter -VM $VM` then `Connect-VMNetworkAdapter -VMNetworkAdapter $Adapter` | `bridge:` reconnects **every** adapter, not the first. Left in place, it would pull the cluster NIC onto the Default Switch on each `vagrant up` |
+| `configure.rb` writes an `action_configure` sentinel and skips the prompt forever after | `bridge:` is only needed on the **first** up. The Vagrantfile sets it only while that sentinel is absent |
+| `get_network_config.ps1`: `Get-VMNetworkAdapter -VM $vm \| Select-Object -Index 0` | SSH always follows **adapter 0**, so the DHCP adapter must stay first and the cluster NIC must be appended after it |
 
-### 3. Elevation
+The second adapter is therefore added host-side by
+`scripts/hyperv-attach-cluster-nic.ps1`, run from an `after :up` / `after :reload` trigger.
 
-Every `vagrant` command needs an **elevated PowerShell** under Hyper-V. Worth a line in the
-README so a reader is not confused.
+One more constraint shapes that script: **these boxes are generation 1**
+(`lavabit/robox`, `generic-hyperv-x64.json`, `"generation": 1` for all 93 builders), and a
+generation-1 VM cannot hot-add a network adapter. So the script stops the VM, attaches, and
+starts it again — once, on the first `vagrant up`. That is why the documented flow is
+`vagrant up --no-provision` followed by `vagrant provision`: provisioning has to happen on
+the boot that *has* the NIC.
+
+Rejected alternative: a single adapter on an Internal switch with `New-NetNat` for internet.
+It cannot work, because an Internal switch has no DHCP, so the guest has no address on first
+boot and Vagrant can never SSH in to assign one. ICS would supply DHCP but rebinds the host's
+physical adapter, which is exactly the kind of host-level change this lab avoids.
+
+### 2. Extra disk — not needed at all
+
+Two facts, both from `generic-hyperv-x64.json`:
+
+- `"disk_size": 131072` — the box's VHDX is 128 GB, dynamically allocated (2.3 GB on disk
+  today).
+- `autopart --type=lvm --nohome` in `http/generic.rocky9.vagrant.ks` — so root gets
+  essentially all of it.
+
+The 30 GB data disk existed only because `rockylinux/9`'s root was 8.9 GB. It is gone, and
+with it the `STORAGE` provisioner, the `/var/lib/rancher` mount and the fstab entry. The
+prereqs banner prints root's real size on every run, so the assumption is verified rather
+than trusted.
+
+(For the record, `config.vm.disk` *is* supported on Hyper-V — `cap/configure_disks.rb`,
+`new_vhd.ps1`, `attach_disk_drive.ps1`, not experimental-gated. It simply isn't needed.)
+
+### 3. Elevation — confirmed, and it fails in a misleading way
+
+Measured on this host, unelevated:
+
+```
+Get-VMSwitch : You do not have the required permission to complete this task.
+Contact the administrator of the authorization policy for the computer 'FURLAN-PC'.
+```
+
+Every `vagrant` command must run from an elevated PowerShell. The failure appears wrapped in
+whatever Vagrant was doing at the time, so it is worth recognising on sight.
+
+### 4. Interface names — answered by the box's boot command
+
+No need to boot anything to find out: the box's kickstart boot line is
+
+```
+<tab> net.ifnames=0 inst.text inst.ks=... vga=792 <enter><wait>
+```
+
+`net.ifnames=0` disables predictable naming, so the interfaces are `eth0` and `eth1`, exactly
+as on the VirtualBox box. `--flannel-iface=eth1` carries over unchanged.
 
 ---
 
 ## Execution order
 
-1. **Research** the three items above. Do not write the Vagrantfile first.
+1. ~~Research the items above~~ — done, see above.
 2. `vagrant destroy -f` the VirtualBox VMs; keep `.k3s-token`.
-3. Create the Internal switch on the host (one-time, admin).
-4. Write the new Vagrantfile. Keep `NODES`, the token block, `PREREQS`, `STORAGE` (adapted),
-   `K3S_SERVER`, `k3s_agent` — only the provider and network blocks are new.
-5. `vagrant up`, verify: `nproc` = 4, interface names, `192.168.56.x` reachable node-to-node,
-   swap 0, SELinux enforcing, **`dmesg | grep -c hrtimer` = 0**.
+3. Create the Internal switch on the host (one-time, elevated):
+   `powershell -ExecutionPolicy Bypass -File scripts\hyperv-create-switch.ps1`
+4. ~~Write the new Vagrantfile~~ — done. `NODES`, the token block, `PREREQS`, `K3S_SERVER`
+   and `k3s_agent` carried over; the provider block, the networking and the trigger are new,
+   and `STORAGE` is gone.
+5. `vagrant up --no-provision`, then `vagrant provision`. Verify: `nproc` = 4, `eth1` present
+   and holding `192.168.58.x`, node-to-node reachable, swap 0, SELinux enforcing, root ~128 GB,
+   and **`dmesg | grep -c hrtimer` = 0**.
 6. Re-run the llm-d install sequence (below).
 7. **Apply the P/D decider config** — the one thing we never got to test.
 8. Update `postmortem-vagrant.md` with the migration and the measurement that justified it.
-9. Remove the kernel pin and confirm a current kernel boots.
+9. Confirm the now-unpinned kernel boots, and reconsider re-enabling metrics-server.
 
 ---
 
@@ -187,7 +250,7 @@ helm upgrade -i sim-pool oci://ghcr.io/llm-d/charts/llm-d-router-gateway \
 cat > /tmp/req.json <<'EOF'
 {"model":"meta-llama/Llama-3.1-8B-Instruct","messages":[{"role":"user","content":"hello there"}]}
 EOF
-curl -s http://192.168.56.11/v1/chat/completions -H 'Content-Type: application/json' -d @/tmp/req.json
+curl -s http://192.168.58.11/v1/chat/completions -H 'Content-Type: application/json' -d @/tmp/req.json
 ```
 
 `provider.name=none` matters: agentgateway handles the InferencePool natively, so the chart

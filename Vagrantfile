@@ -1,58 +1,80 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 #
-# 3-node Rocky Linux 9 cluster on VirtualBox, for a k3s + llm-d AI lab.
+# 3-node Rocky Linux 9 cluster on Hyper-V, for a k3s + llm-d AI lab.
 #
-#   vagrant up                 # create + provision all three nodes
-#   vagrant ssh k3s-server     # log in to one
-#   vagrant status             # what's running
-#   vagrant halt               # shut down, keep the VMs
-#   vagrant destroy -f         # delete everything
+# EVERY vagrant command here must run from an ELEVATED PowerShell. Hyper-V's
+# management API refuses non-administrators outright:
+#   "You do not have the required permission to complete this task."
+# Vagrant surfaces that as an unrelated-looking failure.
 #
-# No distributed storage: Rook/Ceph is a separate project with much larger node
-# requirements. Each node does get a plain 30 GB disk for container storage,
-# because the box's 8.9 GB root cannot hold this stack's images.
+#   # once per host, elevated:
+#   powershell -ExecutionPolicy Bypass -File scripts\hyperv-create-switch.ps1
+#
+#   # then, from this directory:
+#   vagrant up --no-provision   # create + boot; each node gains its cluster NIC
+#   vagrant provision           # cluster IPs, then k3s (server first, agents after)
+#
+#   vagrant ssh k3s-server      # log in to one
+#   vagrant halt                # shut down, keep the VMs
+#   vagrant destroy -f          # delete everything
+#
+# WHY TWO COMMANDS INSTEAD OF ONE `vagrant up`
+#   Vagrant's Hyper-V provider attaches exactly one network adapter and has no
+#   setting for a second (plugins/providers/hyperv/action/configure.rb passes a
+#   single SwitchID). We need two: the Default Switch for DHCP and internet, and
+#   a stable private network for k3s node identity. The second one is added by a
+#   host-side trigger — and because these boxes are generation 1, Hyper-V cannot
+#   hot-add an adapter, so the trigger shuts the VM down, adds it, and starts it
+#   again. Provisioning has to happen after that, not before.
+#   `vagrant up` on an existing VM is a single command again.
+#
+# WHY HYPER-V AT ALL
+#   VirtualBox has no AMD-V on this host and runs guests on NEM, where vCPUs are
+#   descheduled for seconds. See hyperv-migration-plan.md for the measurement,
+#   and archive/Vagrantfile.virtualbox for the configuration it replaces.
 
 NODES = {
-  # hostname       => [ip,              cpus, memory_mb]
-  "k3s-server"     => ["192.168.56.11",    4,      6144],
-  "k3s-agent-1"    => ["192.168.56.12",    4,      6144],
-  "k3s-agent-2"    => ["192.168.56.13",    4,      6144],
+  # hostname       => [cluster ip,      cpus, memory_mb]
+  "k3s-server"     => ["192.168.58.11",    4,      6144],
+  "k3s-agent-1"    => ["192.168.58.12",    4,      6144],
+  "k3s-agent-2"    => ["192.168.58.13",    4,      6144],
 }.freeze
 # Total 18 GB of the host's ~30.8 GB, leaving ~12 GB for Windows.
 
-# How the nodes reach each other.
+# --- networking --------------------------------------------------------------
 #
-# This switch was added to test whether a boot hang was caused by the host-only
-# adapter — VirtualBox 7.2.x does have open networking regressions on Windows
-# (VirtualBox/virtualbox#136, #345). Booting with :none disproved it: the guest
-# hung identically on NAT alone. The real cause was ioapic=off capping the guest
-# at one vCPU. The switch is kept because it is the fastest way to rule
-# networking in or out next time.
+# Adapter 0  Default Switch   DHCP, internet, and the address Vagrant uses for
+#                             SSH. Its subnet is re-randomised by Windows on
+#                             every host reboot, so nothing may depend on it.
+# Adapter 1  CLUSTER_SWITCH   an Internal switch, no DHCP, static addresses set
+#                             by the cluster-net provisioner below. This is the
+#                             only address a node is known by.
 #
-#   :hostonly - normal. Host reaches the nodes directly at 192.168.56.x.
-#               Goes through the Windows NDIS filter driver (VBoxNetLwf).
-#   :intnet   - VirtualBox's internal switch. Node-to-node still works and the
-#               Windows host network stack is bypassed entirely. The host can no
-#               longer reach the nodes on that subnet, so kubectl needs a
-#               forwarded port.
-#   :none     - diagnostic only. NAT only, no second NIC, no cluster network.
-CLUSTER_NET = :hostonly
+# The order matters and is not arbitrary: Vagrant reads the guest's IP from
+# `Get-VMNetworkAdapter | Select-Object -Index 0` (scripts/get_network_config.ps1),
+# so the DHCP adapter has to be the first one. A trigger-added adapter appends
+# after it, which is exactly what we want.
+#
+# 192.168.58.0/24, not .56: VirtualBox's host-only adapter still holds
+# 192.168.56.1 on this host, and two interfaces with the same address is a
+# routing problem that presents as random unreachability.
+CLUSTER_SWITCH   = "k3s-lab"
+CLUSTER_NIC_NAME = "cluster"   # Hyper-V adapter name; the attach script keys off it
+CLUSTER_IFACE    = "eth1"      # the box boots with net.ifnames=0, so eth0/eth1
+CLUSTER_PREFIX   = 24
 
-BOX         = "rockylinux/9"
-BOX_VERSION = "5.0.0"   # pinned so the build is reproducible.
-                        # NOT 6.0.0: the registry lists it as active but the
-                        # .box artifact 404s. 5.0.0 and 4.0.0 download fine.
+BOX         = "generic/rocky9"
+BOX_VERSION = "4.3.12"   # the Rocky 9 box that publishes a hyperv provider.
+                         # rockylinux/9 does not, at any version.
 
 K3S_VERSION = "v1.36.4+k3s1"   # stable channel as of 2026-09-21
 
-# Second disk per node, mounted at /var/lib/rancher.
-#
-# The box's root filesystem is 8.9 GB. k3s puts containerd images, the kubelet
-# and local-path PVs under /var/lib/rancher, and the llm-d stack plus an ollama
-# model will not fit in what is left. Dynamically allocated, so an unused disk
-# costs almost nothing on the host.
-DATA_DISK = "30GB"
+# No second disk here. The VirtualBox box had an 8.9 GB root, which forced one;
+# this box is built with disk_size 131072 and `autopart --type=lvm --nohome`
+# (lavabit/robox generic-hyperv-x64.json), so root has ~128 GB to itself and
+# /var/lib/rancher can just live there. The prereqs banner prints root's real
+# size so this assumption is checked on every run rather than trusted.
 
 # The first node in NODES is the control plane; the rest join it as agents.
 SERVER_NAME = NODES.keys.first
@@ -76,6 +98,8 @@ K3S_TOKEN  =
     end
   end
 
+ATTACH_NIC_SCRIPT = File.join(__dir__, "scripts", "hyperv-attach-cluster-nic.ps1")
+
 # /etc/hosts entries for every node. Built as plain lines to keep the
 # shell script free of heredoc-escaping surprises.
 hosts_script = "set -eu\nsed -i '/# vagrant-k3s-lab$/d' /etc/hosts\n"
@@ -83,10 +107,55 @@ NODES.each do |name, (ip, _cpus, _mem)|
   hosts_script += "echo '#{ip} #{name} # vagrant-k3s-lab' >> /etc/hosts\n"
 end
 
+# --- the cluster NIC, inside the guest ---------------------------------------
+#
+# The adapter arrives unconfigured: an Internal Hyper-V switch has no DHCP
+# server, unlike the Default Switch. NetworkManager would leave it down, so the
+# address is assigned here.
+#
+# ipv4.never-default matters. Without it NetworkManager can install a second
+# default route over a network that has no gateway, and the node loses its way
+# out to the internet halfway through provisioning.
+cluster_net = lambda do |ip|
+  <<~SHELL
+    set -euo pipefail
+
+    IFACE=#{CLUSTER_IFACE}
+    ADDR=#{ip}/#{CLUSTER_PREFIX}
+
+    if ! ip link show "$IFACE" >/dev/null 2>&1; then
+      echo "*** $IFACE is missing. The cluster NIC was never attached."
+      echo "*** Run, from an elevated PowerShell in this directory:"
+      echo "***   vagrant halt && vagrant up"
+      echo "*** and check that the '#{CLUSTER_SWITCH}' switch exists:"
+      echo "***   Get-VMSwitch -Name #{CLUSTER_SWITCH}"
+      exit 1
+    fi
+
+    if nmcli -t -f NAME connection show 2>/dev/null | grep -qx cluster; then
+      nmcli connection modify cluster \
+        ipv4.method manual ipv4.addresses "$ADDR" ipv4.never-default yes \
+        ipv6.method disabled connection.autoconnect yes
+    else
+      nmcli connection add type ethernet con-name cluster ifname "$IFACE" \
+        ipv4.method manual ipv4.addresses "$ADDR" ipv4.never-default yes \
+        ipv6.method disabled connection.autoconnect yes
+    fi
+    nmcli connection up cluster >/dev/null
+
+    echo "cluster network:"
+    ip -br a show "$IFACE" | sed 's/^/   /'
+    echo "default route (must stay on eth0):"
+    ip route show default | sed 's/^/   /'
+  SHELL
+end
+
 PREREQS = <<~'SHELL'
   set -euo pipefail
 
   # --- Kubernetes requires swap off -------------------------------------
+  # This box does have swap: its kickstart uses plain `autopart`, which always
+  # creates a swap LV.
   swapoff -a
   sed -i '/[[:space:]]swap[[:space:]]/ s/^/#/' /etc/fstab
 
@@ -97,15 +166,14 @@ PREREQS = <<~'SHELL'
   dnf install -y -q chrony curl tar iproute
   systemctl enable --now chronyd
 
-  # Userspace gets patched; the kernel does NOT.
+  # Full update, kernel included.
   #
-  # HONEST NOTE: this pin was added while chasing a boot hang that a new kernel
-  # appeared to trigger. That hypothesis was wrong — the hang was ioapic=off
-  # capping every guest at a single vCPU, which made boots exceed Vagrant's
-  # timeout. With the I/O APIC enabled a newer kernel will probably boot fine.
-  # The pin is retained only so that one variable changes at a time; it is due
-  # to be tested and most likely removed.
-  dnf update -y -q --exclude=kernel*
+  # The VirtualBox version of this file excluded kernels, added while chasing a
+  # boot hang that a new kernel appeared to trigger. That hypothesis was wrong
+  # (the cause was ioapic=off capping every guest at one vCPU), and the host it
+  # was compensating for is gone, so the pin is gone with it. This box ships
+  # Rocky 9.3, so the first run has a lot to fetch.
+  dnf update -y -q
 
   # --- report what this guest can actually do ---------------------------
   echo "=============================================================="
@@ -113,13 +181,22 @@ PREREQS = <<~'SHELL'
   echo " KERNEL: $(uname -r)"
   echo " RAM:    $(free -h | awk '/^Mem:/{print $2}')   CPUS: $(nproc)"
   echo " SWAP:   $(free -h | awk '/^Swap:/{print $2}')  (must be 0B)"
+  echo " ROOT:   $(df -h --output=size,avail / | tail -1 | tr -s ' ')  (size, available)"
   echo "--------------------------------------------------------------"
 
-  # k3s must be pinned to the host-only NIC, not the NAT one (10.0.2.15
-  # is identical on every VM). These are the names we need for --node-ip
-  # and --flannel-iface.
+  # k3s must be pinned to the cluster NIC, not the DHCP one: every Vagrant VM
+  # gets its default route over the switch Vagrant manages, and on the Default
+  # Switch those addresses are handed out fresh on every host reboot.
   echo " INTERFACES:"
   ip -br a | sed 's/^/   /'
+  echo "--------------------------------------------------------------"
+
+  # The measurement that justified this whole migration. On VirtualBox/NEM this
+  # counted 14 on the server and 6 per agent; on Hyper-V it must stay 0. A
+  # non-zero count here means the guest is being descheduled and nothing above
+  # the kubelet will behave.
+  HRT=$(dmesg 2>/dev/null | grep -c hrtimer || true)
+  echo " HRTIMER WARNINGS: ${HRT}  (must be 0)"
   echo "--------------------------------------------------------------"
 
   # CPU flags gate the AI-lab plan: the real vLLM CPU backend needs AVX-512.
@@ -131,58 +208,22 @@ PREREQS = <<~'SHELL'
     *avx*)    echo "   -> AVX only: ollama will be slow. Simulator required." ;;
     *)        echo "   -> NO AVX AT ALL: expect poor ollama performance." ;;
   esac
+
+  # Informational: a kernel update only takes effect after `vagrant reload`.
+  if command -v needs-restarting >/dev/null 2>&1 && ! needs-restarting -r >/dev/null 2>&1; then
+    echo "--------------------------------------------------------------"
+    echo " A reboot is pending (new kernel). Run: vagrant reload"
+  fi
   echo "=============================================================="
-SHELL
-
-# --- container storage -------------------------------------------------------
-#
-# Must run BEFORE k3s installs, otherwise images land on the root filesystem and
-# mounting over them afterwards hides them.
-STORAGE = <<~'SHELL'
-  set -euo pipefail
-  DISK=/dev/sdb
-  MOUNT=/var/lib/rancher
-
-  if [ ! -b "$DISK" ]; then
-    echo "*** WARNING: $DISK is not present. The extra disk was not attached."
-    echo "*** k3s will fall back to the ~9 GB root filesystem and may run out."
-    exit 0
-  fi
-
-  if mountpoint -q "$MOUNT"; then
-    echo "$MOUNT already mounted:"
-    df -h "$MOUNT" | tail -1
-    exit 0
-  fi
-
-  # blkid succeeds only if the device already carries a filesystem.
-  if ! blkid "$DISK" >/dev/null 2>&1; then
-    echo "Formatting $DISK as xfs ..."
-    mkfs.xfs -q -f "$DISK"
-  fi
-
-  UUID=$(blkid -s UUID -o value "$DISK")
-  mkdir -p "$MOUNT"
-
-  # Mount by UUID: device names can reorder across boots, and a wrong entry
-  # here stops the node booting.
-  if ! grep -q "$UUID" /etc/fstab; then
-    echo "UUID=$UUID $MOUNT xfs defaults,noatime 0 2" >> /etc/fstab
-  fi
-
-  mount "$MOUNT"
-  restorecon -R "$MOUNT" 2>/dev/null || true
-  echo "container storage ready:"
-  df -h "$MOUNT" | tail -1
 SHELL
 
 # --- k3s control plane -------------------------------------------------------
 #
-# --node-ip and --flannel-iface are mandatory here, not tuning. Every Vagrant VM
-# carries a NAT adapter at 10.0.2.15 — the same address on all three machines —
-# and k3s picks its node IP from the default route, which points there. Without
-# these flags all three nodes register as 10.0.2.15, the cluster forms, and pod
-# networking then fails in ways that look like anything but a networking problem.
+# --node-ip and --flannel-iface are mandatory here, not tuning. k3s picks its
+# node IP from the default route, which points at the Default Switch — an
+# address that changes whenever Windows re-rolls that subnet. Without these
+# flags the cluster forms and then breaks in ways that look like anything but a
+# networking problem.
 #
 # traefik is disabled because llm-d brings its own Envoy-based gateway; two
 # ingress controllers competing for 80/443 through ServiceLB is a bad time.
@@ -202,7 +243,7 @@ K3S_SERVER = <<~SHELL
   NEW=$(mktemp)
   {
     echo "node-ip: #{SERVER_IP}"
-    echo 'flannel-iface: eth1'
+    echo 'flannel-iface: #{CLUSTER_IFACE}'
     echo 'write-kubeconfig-mode: "0644"'
     echo 'tls-san:'
     echo "  - #{SERVER_IP}"
@@ -210,10 +251,11 @@ K3S_SERVER = <<~SHELL
     # traefik: llm-d brings its own Envoy-based gateway, and two ingress
     # controllers competing for 80/443 via ServiceLB is a bad time.
     echo '  - traefik'
-    # metrics-server: on this host it sustained ~90% of a vCPU while failing
-    # its own scrapes, because the runtime is slow enough that scrapes never
-    # complete. That feedback loop took all three nodes NotReady at once.
-    # kubectl top is the only thing lost.
+    # metrics-server: on the VirtualBox host it sustained ~90% of a vCPU while
+    # failing its own scrapes, because the runtime was slow enough that scrapes
+    # never completed. That feedback loop took all three nodes NotReady at once.
+    # It is a fair bet this is fine on Hyper-V — re-enable it once the cluster
+    # has been stable for a while, and `kubectl top` comes back.
     echo '  - metrics-server'
   } > "$NEW"
 
@@ -248,10 +290,10 @@ K3S_SERVER = <<~SHELL
   # Agents are provisioned next and will try to join immediately, so do not
   # return until the API actually answers.
   #
-  # Poll a real API call rather than /readyz: on this host /readyz can go green
-  # seconds before the API will actually serve requests, and the gap is long
-  # enough that the next command fails. Under set -e that aborts the whole
-  # multi-machine run and later nodes are silently skipped.
+  # Poll a real API call rather than /readyz: /readyz can go green seconds
+  # before the API will actually serve requests, and the gap is long enough that
+  # the next command fails. Under set -e that aborts the whole multi-machine run
+  # and later nodes are silently skipped.
   echo -n "Waiting for the API server "
   for i in $(seq 1 120); do
     if $K3S kubectl get nodes >/dev/null 2>&1; then echo " ready"; break; fi
@@ -274,7 +316,7 @@ k3s_agent = lambda do |ip|
     NEW=$(mktemp)
     {
       echo "node-ip: #{ip}"
-      echo 'flannel-iface: eth1'
+      echo 'flannel-iface: #{CLUSTER_IFACE}'
     } > "$NEW"
 
     CONFIG_CHANGED=no
@@ -317,65 +359,72 @@ k3s_agent = lambda do |ip|
 end
 
 Vagrant.configure("2") do |config|
-  config.vm.box          = BOX
-  config.vm.box_version  = BOX_VERSION
-  # Generous, deliberately. VirtualBox has no AMD-V here and falls back to
-  # NEM (Windows Hypervisor Platform), where every VM exit is expensive and
-  # boots can run many minutes. At the default timeout Vagrant gives up on a
-  # guest that is still booting, which is indistinguishable from a hang.
-  config.vm.boot_timeout = 1800
+  config.vm.box         = BOX
+  config.vm.box_version = BOX_VERSION
 
-  # The box ships without Guest Additions, so shared folders would fail.
+  # The box has no Hyper-V guest tools for SMB shares, and an SMB sync would
+  # stop to ask for host credentials. Nothing here needs /vagrant.
   config.vm.synced_folder ".", "/vagrant", disabled: true
 
-  config.vm.provider "virtualbox" do |vb|
-    vb.linked_clone          = true   # 3 VMs share one base image
-    vb.gui                   = false
-    vb.check_guest_additions = false
+  config.vm.provider "hyperv" do |h|
+    h.linked_clone = true   # 3 VMs share one base VHDX, as differencing disks
+
+    # Fixed memory, deliberately.
+    #
+    # This box's own Vagrantfile sets maxmemory = 2048, and any maxmemory turns
+    # Dynamic Memory ON (scripts/utils/VagrantVM/VagrantVM.psm1,
+    # Set-VagrantVMMemory). Inherited, it would cap a 6 GB node at 2 GB. An
+    # explicit nil here beats the box's value in Vagrant's config merge and
+    # gives a flat allocation — which is also what we want while measuring
+    # scheduling behaviour.
+    h.maxmemory = nil
   end
 
   NODES.each_with_index do |(name, (ip, cpus, memory)), index|
     config.vm.define name, primary: (index.zero?) do |node|
       node.vm.hostname = name
 
-      case CLUSTER_NET
-      when :hostonly
-        node.vm.network "private_network", ip: ip
-      when :intnet
-        node.vm.network "private_network", ip: ip, virtualbox__intnet: "k3slab"
-      when :none
-        # No cluster NIC. Boots on NAT alone, for isolating network faults.
-      else
-        raise "CLUSTER_NET must be :hostonly, :intnet or :none"
+      node.vm.provider "hyperv" do |h|
+        h.vmname = name
+        h.cpus   = cpus
+        h.memory = memory
       end
 
-      node.vm.provider "virtualbox" do |vb|
-        vb.name   = name
-        vb.cpus   = cpus
-        vb.memory = memory
-
-        # Give the guest the KVM paravirtualised clock. VirtualBox picks
-        # "legacy" for a generic Linux_64 guest, which leaves it reading raw
-        # TSC; under Hyper-V compatibility mode that drifts, the kernel's
-        # clocksource watchdog declares TSC unstable, and the boot can hang
-        # before sshd finishes coming up.
-        vb.customize ["modifyvm", :id, "--paravirtprovider", "kvm"]
-
-        # REQUIRED for vb.cpus > 1. VirtualBox needs the I/O APIC to run an SMP
-        # guest; with it off it silently hands the guest a single CPU and
-        # ignores the cpus setting entirely — no warning anywhere. The box
-        # ships with ioapic off and Vagrant does not turn it on, so a node
-        # configured for 4 vCPUs boots with 1, and everything crawls.
-        #   Verify in the guest: nproc  (must match the NODES table)
-        vb.customize ["modifyvm", :id, "--ioapic", "on"]
+      # Pin adapter 0 to the Default Switch — but only until Vagrant has
+      # configured this machine once.
+      #
+      # `bridge:` is how the Hyper-V provider chooses a switch by name
+      # (action/configure.rb). It has to be set on the first up, or Vagrant
+      # stops and asks interactively which switch to use, now that the host has
+      # more than one. It must NOT stay set afterwards: Vagrant applies it with
+      # Connect-VMNetworkAdapter against EVERY adapter the VM has, so a later
+      # `vagrant up` would drag the cluster NIC onto the Default Switch and take
+      # the cluster network down. Vagrant writes this sentinel after the first
+      # configure and then never prompts again.
+      sentinel = File.join(__dir__, ".vagrant", "machines", name, "hyperv", "action_configure")
+      unless File.exist?(sentinel)
+        node.vm.network "private_network", bridge: "Default Switch"
       end
 
-      # Unformatted second disk; the storage provisioner claims it.
-      node.vm.disk :disk, size: DATA_DISK, name: "#{name}-data"
+      # Add the cluster NIC on the host side, because the provider cannot.
+      # Idempotent: the script exits immediately if the adapter is already
+      # there, which is the normal case on every run after the first.
+      [:up, :reload].each do |cmd|
+        node.trigger.after cmd do |t|
+          t.name = "cluster NIC"
+          t.info = "Ensuring #{name} has a NIC on the #{CLUSTER_SWITCH} switch"
+          t.run  = {
+            inline: "powershell -NoProfile -ExecutionPolicy Bypass " \
+                    "-File \"#{ATTACH_NIC_SCRIPT}\" " \
+                    "-VmName #{name} -SwitchName #{CLUSTER_SWITCH} " \
+                    "-AdapterName #{CLUSTER_NIC_NAME}"
+          }
+        end
+      end
 
-      node.vm.provision "hosts",   type: "shell", inline: hosts_script
-      node.vm.provision "prereqs", type: "shell", inline: PREREQS
-      node.vm.provision "storage", type: "shell", inline: STORAGE
+      node.vm.provision "hosts",       type: "shell", inline: hosts_script
+      node.vm.provision "cluster-net", type: "shell", inline: cluster_net.call(ip)
+      node.vm.provision "prereqs",     type: "shell", inline: PREREQS
 
       if name == SERVER_NAME
         node.vm.provision "k3s", type: "shell", inline: K3S_SERVER

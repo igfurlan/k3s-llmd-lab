@@ -1,21 +1,28 @@
 # k3s-llmd-lab
 
-A three-node [k3s](https://k3s.io) cluster on VirtualBox, built to run the
+A three-node [k3s](https://k3s.io) cluster on Hyper-V, built to run the
 [llm-d](https://llm-d.ai) distributed inference stack — provisioned from a single
 Vagrantfile, on a Windows host.
 
 The GPU in the host machine is unreachable from the VMs, so **the inference is simulated
 and the orchestration is real**. That trade is deliberate, and explained below.
 
+> The lab began on VirtualBox and moved to Hyper-V on 2026-09-22, because VirtualBox never
+> gets hardware virtualization on this host and its guests were being descheduled for
+> seconds at a time. [hyperv-migration-plan.md](hyperv-migration-plan.md) has the
+> measurement that decided it; [archive/Vagrantfile.virtualbox](archive/Vagrantfile.virtualbox)
+> is the configuration it replaced, kept for the history.
+
 ## Why simulated inference
 
-Three independent facts, any one of which is disqualifying on its own:
-
-1. **VirtualBox has no GPU passthrough.** The host's RTX 5070 Ti is invisible to every guest.
-2. **vLLM's CPU backend requires AVX-512.** The host CPU has it; VirtualBox does not expose it
-   to guests. Measured in the running VMs: `avx avx2`, nothing beyond.
-3. **Hyper-V compatibility mode compounds it.** Windows keeps a hypervisor resident, costing
-   nested paging and sometimes AVX2 itself.
+1. **No GPU passthrough.** Discrete Device Assignment is a Windows *Server* feature, so the
+   host's RTX 5070 Ti is invisible to every guest here.
+2. **vLLM's CPU backend requires AVX-512.** The host CPU (Ryzen 7 9800X3D) has it. Under
+   VirtualBox the guests saw `avx avx2` and nothing beyond, which ruled real vLLM out.
+   Whether Hyper-V passes AVX-512 through is **re-measured on first boot** — the provisioner
+   banner prints the flags, and if AVX-512 appears the plan gets a real vLLM option back.
+3. **6 GB nodes.** Even with the right instruction set, a real model's weights and KV cache
+   do not fit alongside a control plane and a gateway.
 
 The resolution is [`llm-d-inference-sim`](https://github.com/llm-d/llm-d-inference-sim) — the
 llm-d project's own GPU-free vLLM mock. It is OpenAI-API compliant, models prefill and decode
@@ -28,28 +35,38 @@ AVX2 fast path.
 
 ## Cluster
 
-| Node | Role | Host-only IP | vCPU | RAM |
+| Node | Role | Cluster IP | vCPU | RAM |
 |---|---|---|---|---|
-| `k3s-server` | control plane + workload | `192.168.56.11` | 4 | 6144 MB |
-| `k3s-agent-1` | workload | `192.168.56.12` | 4 | 6144 MB |
-| `k3s-agent-2` | workload | `192.168.56.13` | 4 | 6144 MB |
+| `k3s-server` | control plane + workload | `192.168.58.11` | 4 | 6144 MB |
+| `k3s-agent-1` | workload | `192.168.58.12` | 4 | 6144 MB |
+| `k3s-agent-2` | workload | `192.168.58.13` | 4 | 6144 MB |
 
-Guests are Rocky Linux 9, from box `rockylinux/9` pinned at `5.0.0`. Swap off, firewalld
-disabled, SELinux left **enforcing** — k3s installs `k3s-selinux` and `container-selinux`
-itself, which is the same posture a real RHEL deployment would have.
+Guests are Rocky Linux 9, from box `generic/rocky9` pinned at `4.3.12` — the Rocky box that
+publishes a `hyperv` provider. Swap off, firewalld disabled, SELinux left **enforcing** —
+k3s installs `k3s-selinux` and `container-selinux` itself, which is the same posture a real
+RHEL deployment would have.
 
-Each node carries a **30 GB second disk mounted at `/var/lib/rancher`**. The box's root
-filesystem is 8.9 GB, and containerd images, local-path volumes and a model will not fit in
-what remains. The disk is dynamically allocated, so unused space costs nothing on the host.
+Memory is **fixed, not dynamic**. This box's own Vagrantfile sets `maxmemory = 2048`, and any
+`maxmemory` switches Hyper-V Dynamic Memory on; inherited, it would cap a 6 GB node at 2 GB.
+
+No second disk: the box's VHDX is 128 GB, dynamically allocated, and its kickstart gives root
+essentially all of it. (The VirtualBox box had an 8.9 GB root, which is why the archived
+Vagrantfile carries a 30 GB data disk and an XFS mount at `/var/lib/rancher`.)
 
 ### k3s
 
 Installed by the Vagrantfile, pinned to `v1.36.4+k3s1`:
 
 ```
---node-ip=192.168.56.11 --flannel-iface=eth1 --tls-san=192.168.56.11
---disable=traefik --write-kubeconfig-mode=0644
+--node-ip=192.168.58.11 --flannel-iface=eth1 --tls-san=192.168.58.11
+--disable=traefik --disable=metrics-server --write-kubeconfig-mode=0644
 ```
+
+These live in `/etc/rancher/k3s/config.yaml`, not in the installer's `INSTALL_K3S_EXEC`.
+The reason is practical: the Vagrantfile skips the install step when k3s is already running,
+so anything baked into the installer can never change again on an existing cluster. k3s
+re-reads `config.yaml` on every start, so editing the Vagrantfile and re-provisioning
+actually does something.
 
 `--disable=traefik` because llm-d brings its own Envoy-based gateway, and two ingress
 controllers competing for ports 80/443 through ServiceLB is a bad time. ServiceLB stays
@@ -59,35 +76,75 @@ The cluster join token is generated at build time with `SecureRandom.hex(32)`, w
 gitignored `.k3s-token`, and reused on every later run. It is deliberately **not** hardcoded
 in the Vagrantfile — a join token is a credential and this repository is public.
 
-```bash
-vagrant destroy -f && vagrant up   # rebuilds the entire cluster from nothing
+```powershell
+# rebuilds the entire cluster from nothing
+vagrant destroy -f; vagrant up --no-provision; vagrant provision
 ```
 
 ## Quick start
 
-Requires [Vagrant](https://developer.hashicorp.com/vagrant) 2.4.9+ and
-[VirtualBox](https://www.virtualbox.org) 7.2.x.
+Requires [Vagrant](https://developer.hashicorp.com/vagrant) 2.4.9+ and the Hyper-V role.
+**Every command must run from an elevated PowerShell** — Hyper-V's management API refuses
+non-administrators outright, and Vagrant reports that as something else entirely.
 
-```bash
-vagrant up          # build and provision all three nodes
+Once per host:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\hyperv-create-switch.ps1
+```
+
+Then, from the repository:
+
+```powershell
+vagrant up --no-provision   # create and boot; each node gains its cluster NIC
+vagrant provision           # cluster addresses, then k3s — server first, agents after
 vagrant ssh k3s-server
-vagrant halt        # power off, keep the VMs
+vagrant halt                # power off, keep the VMs
 ```
 
-Each node prints a banner on provision with its OS, CPU flags, interfaces and swap state.
+Two commands on the first run, one (`vagrant up`) on every run after. The reason is in the
+next section.
 
-## The networking trap
+Each node prints a banner on provision with its OS, CPU flags, interfaces, root size, swap
+state and `hrtimer` warning count.
 
-Every Vagrant VM has **two** adapters: `eth0` is NAT at `10.0.2.15` — *identical on all three
-machines* — and `eth1` carries the host-only address that actually routes between nodes.
+## Networking, and why it takes a script
 
-k3s auto-detects its node IP from the default route, which points at the NAT adapter. Left
-alone, all three nodes register as `10.0.2.15`, the cluster forms, and pod networking breaks
-silently. Both flags are mandatory:
+Vagrant's Hyper-V provider manages **one** network adapter and has no setting for a second.
+The cluster needs two, for reasons that do not overlap:
+
+| Adapter | Switch | Role |
+|---|---|---|
+| `eth0` | **Default Switch** | DHCP and internet, and the address Vagrant SSHes to. Windows re-randomises this subnet on every host reboot, so nothing may depend on it |
+| `eth1` | **`k3s-lab`**, an Internal switch | Static `192.168.58.x`. The only address a node is known by |
+
+So `eth1` is attached host-side by
+[`scripts/hyperv-attach-cluster-nic.ps1`](scripts/hyperv-attach-cluster-nic.ps1), from an
+`after :up` trigger. These boxes are generation 1, which cannot hot-add an adapter, so that
+script shuts the VM down, attaches, and starts it again — once, which is why provisioning is
+held back to a second command on the first run.
+
+Three details make it work, each one taken from the provider's source rather than guessed:
+
+- **`bridge:` picks the switch by name**, and is set only until Vagrant's `action_configure`
+  sentinel exists. Left in place it would be re-applied to *every* adapter on each `up`
+  (`Set-VagrantVMSwitch` connects them all), dragging `eth1` onto the Default Switch.
+- **SSH follows adapter 0** (`Get-VMNetworkAdapter | Select-Object -Index 0`), so the DHCP
+  adapter must stay first and the cluster NIC is appended after it.
+- **An Internal switch has no DHCP**, so `eth1` gets its address from a provisioner, with
+  `ipv4.never-default yes` to keep the default route on `eth0`.
+
+The trap this replaces is the same on any provider: k3s takes its node IP from the default
+route, which points at the adapter Vagrant manages — `10.0.2.15` on every VM under
+VirtualBox, a lease that changes under Hyper-V. Both flags are mandatory:
 
 ```
---node-ip=192.168.56.x --flannel-iface=eth1
+--node-ip=192.168.58.x --flannel-iface=eth1
 ```
+
+The subnet is `192.168.58.0/24` rather than the more usual `.56`, because VirtualBox's
+host-only adapter still holds `192.168.56.1` on this host and two interfaces sharing an
+address is a routing problem that shows up as intermittent unreachability.
 
 ## What goes on top
 
@@ -162,11 +219,14 @@ the speedup is not.
   that does not transfer.
 - **VM disks belong on an SSD.** Roughly 1000× the random IOPS of a spinning disk, and three
   VMs on one spindle means head thrash.
-- **The host has no AMD-V available.** Windows keeps a hypervisor resident, so VirtualBox
-  falls back to NEM (the Windows Hypervisor Platform API) and every VM exit is expensive.
-  This is the performance baseline everything here runs on, and it is why `boot_timeout` is
-  set to 1800 rather than the default.
+- **The hypervisor choice was measured, not assumed.** Windows keeps a hypervisor resident
+  for Memory Integrity, so VirtualBox never gets AMD-V here and falls back to NEM, where
+  guest vCPUs are descheduled for seconds. A 50 ms sleep, 50 samples: multi-second stalls on
+  VirtualBox, 51–52 ms every time on Hyper-V; `hrtimer` warnings 14/6/6 versus 0. Memory
+  Integrity stays on — Hyper-V *is* the hypervisor it requires, so this removes the
+  indirection instead of fighting it.
 - **One VirtualBox setting cost four hours.** `ioapic=off` silently caps a guest at a single
   CPU while still reporting four. [postmortem-vagrant.md](postmortem-vagrant.md) has the
   full account, including the diagnostics that actually discriminated between "slow" and
-  "hung".
+  "hung". It no longer applies to the live Vagrantfile, but the reasoning is the transferable
+  part.
