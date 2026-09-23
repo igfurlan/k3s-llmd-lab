@@ -1,0 +1,83 @@
+# Scraping the EPP, which requires authentication.
+#
+# The EPP's /metrics is guarded by `--metrics-endpoint-auth` (default true). A
+# plain GET returns an EMPTY BODY with no error, which reads exactly like a
+# component that exports nothing — it cost this lab an "open item" for a day.
+# The endpoint is plain HTTP; TLS is a separate flag we have not set.
+#
+# Under the hood it is controller-runtime's metrics protection: the request's
+# bearer token goes through a TokenReview, then a SubjectAccessReview asks
+# whether that identity may GET the non-resource URL /metrics. So a scraper
+# needs an identity and a grant, which is what this file creates.
+#
+# The alternative — `--metrics-endpoint-auth=false` — would work in one line.
+# It is not used here, because turning off authentication to make monitoring
+# convenient is precisely the habit this kind of lab should not teach.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: epp-metrics-reader
+  # In Prometheus's namespace, not the workload's: the operator can only mount
+  # secrets that live alongside Prometheus.
+  namespace: monitoring
+---
+# A non-resource URL grant. Not a Role on objects — /metrics is not an API
+# object, so it is reached through nonResourceURLs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: epp-metrics-reader
+rules:
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: epp-metrics-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: epp-metrics-reader
+subjects:
+  - kind: ServiceAccount
+    name: epp-metrics-reader
+    namespace: monitoring
+---
+# A long-lived token for that ServiceAccount.
+#
+# Since Kubernetes 1.24 ServiceAccounts no longer auto-create token secrets;
+# this annotation is how you ask for one explicitly. Projected tokens would be
+# better practice for a workload, but Prometheus needs a secret it can read as
+# scrape credentials, and this token is scoped to exactly one verb on one URL.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: epp-metrics-token
+  namespace: monitoring
+  annotations:
+    kubernetes.io/service-account.name: epp-metrics-reader
+type: kubernetes.io/service-account-token
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: sim-pool-epp
+  namespace: llm-d
+  labels:
+    app.kubernetes.io/part-of: llm-d-lab
+spec:
+  selector:
+    matchLabels:
+      # The Service the llm-d-router-gateway chart creates for the EPP.
+      # Verify with: kubectl -n llm-d get svc sim-pool-epp --show-labels
+      app.kubernetes.io/name: llm-d-router-gateway
+  endpoints:
+    - port: metrics          # the EPP's 9090
+      path: /metrics
+      interval: 15s
+      authorization:
+        type: Bearer
+        credentials:
+          name: epp-metrics-token
+          key: token

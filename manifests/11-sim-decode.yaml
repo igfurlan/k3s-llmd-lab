@@ -74,7 +74,12 @@ spec:
             - "--secure-proxy=false"
             - "--data-parallel-size=1"
           ports:
-            - name: http
+            # Named `proxy`, not `http`, and the name carries weight: the
+            # PodMonitor selects model-server targets by the port name `http`,
+            # which on this pod belongs to the simulator on 8200. Naming both
+            # `http` would have Prometheus scrape the proxy as well, producing
+            # a second set of series for the same pod.
+            - name: proxy
               containerPort: 8000
           env:
             - name: POD_IP

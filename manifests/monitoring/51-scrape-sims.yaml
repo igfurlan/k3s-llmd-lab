@@ -1,0 +1,50 @@
+# Scraping the model servers.
+#
+# A PodMonitor, not a ServiceMonitor, because the simulators have no Service:
+# the InferencePool selects their pods directly, which is the whole point of
+# the inference extension. There is nothing in front of them to scrape through.
+#
+# These are the metrics the whole lab is about:
+#
+#   vllm:prefix_cache_hits_total      cached prompt tokens, per pod
+#   vllm:prefix_cache_queries_total   queried prompt tokens, per pod
+#   vllm:kv_cache_usage_perc          how full each pod's KV cache is
+#   vllm:num_requests_running/waiting  queue depth — what queue-scorer reads
+#
+# They are vLLM's names, emitted by a simulator. That compatibility is what
+# makes a GPU-free lab worth building: swap a simulator for a real vLLM and
+# every panel keeps working.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: sim
+  namespace: llm-d
+  labels:
+    app.kubernetes.io/part-of: llm-d-lab
+spec:
+  selector:
+    matchLabels:
+      app: sim
+  podMetricsEndpoints:
+    # By port NAME, and the name resolves to a different number on each role:
+    # 8000 on prefill (the simulator is the only container) and 8200 on decode
+    # (where the routing sidecar owns 8000 and is named `proxy`). Either way
+    # this scrapes the simulator itself rather than the proxy in front of it.
+    - port: http
+      path: /metrics
+      interval: 15s
+  # Keep the role label on every series. Without it, prefill and decode are
+  # two anonymous pods and no panel can tell the story of the split.
+  podTargetLabels:
+    - llm-d.ai/role
+---
+# ollama, for completeness — and to be explicit about a limitation.
+#
+# ollama exposes NO Prometheus metrics. There is no endpoint to scrape, so
+# there is no PodMonitor here. It appears in dashboards only through cAdvisor's
+# container_cpu_* and container_memory_* series, which kubelet provides for
+# every pod.
+#
+# That is worth showing rather than hiding: a real model's CPU burning next to
+# a simulator's flat line is the clearest illustration of what is real and what
+# is modelled in this lab.
