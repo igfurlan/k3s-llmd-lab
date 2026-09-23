@@ -1,0 +1,124 @@
+# kube-prometheus-stack, trimmed to fit three 6 GB nodes.
+#
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   helm upgrade -i monitoring prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring --create-namespace \
+#     -f ~/manifests/monitoring/kube-prometheus-stack-values.yaml
+#
+# WHY THE OPERATOR AND NOT PLAIN PROMETHEUS
+#   PodMonitor/ServiceMonitor let each workload declare how it is scraped, next
+#   to the workload. The alternative is one central scrape config that has to be
+#   edited every time something is added — which is exactly the coupling this
+#   lab exists to demonstrate the absence of.
+
+# Alerting has nowhere to go here, and it is the single largest component we do
+# not need. Recording/alerting rules still evaluate; only delivery is gone.
+alertmanager:
+  enabled: false
+
+# --- k3s reality ------------------------------------------------------------
+#
+# These four scrape jobs assume a kubeadm-style control plane with components
+# listening on their own ports. k3s runs them inside one process, so the
+# Services these create have no endpoints and the targets sit permanently red.
+# Disabled deliberately: a dashboard full of false failures teaches people to
+# ignore failures.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    # A lab, not an archive. 24h keeps the disk small and still covers a full
+    # day of experiments.
+    retention: 24h
+    scrapeInterval: 15s
+    evaluationInterval: 30s
+
+    # THE SETTING PEOPLE LOSE AN AFTERNOON TO.
+    #
+    # By default the operator only picks up monitors carrying the release's own
+    # Helm labels, so a PodMonitor written by hand is silently ignored — it
+    # exists, it is valid, and nothing scrapes it. These two make Prometheus
+    # consider every monitor in the cluster.
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        memory: 1500Mi
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          # k3s ships local-path as the default StorageClass, so this needs no
+          # storageClassName. One consequence worth knowing: local-path volumes
+          # are node-local, so Prometheus is pinned to whichever node it first
+          # scheduled on. Deleting the PVC is how you move it.
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+grafana:
+  # Lab credentials, stated plainly rather than hidden in a secret nobody can
+  # find. This cluster is reachable only from the host over an Internal switch.
+  adminPassword: admin
+
+  service:
+    # NodePort, not LoadBalancer. k3s's ServiceLB claims host ports on every
+    # node, and agentgateway already holds :80 for the inference gateway —
+    # a second LoadBalancer would fight it for the port.
+    # Reachable from Windows at http://192.168.58.11:30300
+    type: NodePort
+    nodePort: 30300
+
+  # Provision dashboards from any ConfigMap labelled grafana_dashboard="1".
+  # Borrowed from igfurlan/claude-dashboard, which learned it the hard way.
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 192Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      memory: 64Mi

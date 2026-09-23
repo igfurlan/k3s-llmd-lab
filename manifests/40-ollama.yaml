@@ -1,0 +1,147 @@
+# Real inference, on the CPU.
+#
+# WHY THIS IS SUDDENLY WORTH DOING
+#   The lab was designed around "inference must be simulated", and that was
+#   true — on VirtualBox, which exposed only `avx avx2` to guests. Measured on
+#   Hyper-V, the same host passes the full set through:
+#
+#     avx avx2 avx512f avx512bw avx512dq avx512vl avx512_bf16 avx512_vnni ...
+#
+#   So the constraint was the hypervisor's, not the hardware's. ollama needs
+#   none of that (AVX2 is plenty for its GGUF kernels), but the finding is what
+#   makes a real model worth putting next to the simulators.
+#
+# WHY IT IS NOT IN THE InferencePool
+#   The EPP scores endpoints from vLLM-format metrics — queue depth, KV cache
+#   utilisation, prefix hits. ollama publishes none of those. Putting it in the
+#   pool would give the scheduler a candidate it cannot reason about, and the
+#   scorers would quietly rank it on missing data.
+#
+#   So it gets its own route on the same Gateway: smart routing for the pool,
+#   plain routing for ollama, one front door. That contrast is the point —
+#   it shows what the inference extension adds by showing traffic without it.
+#
+# MODEL CHOICE
+#   qwen2.5:0.5b — roughly 400 MB quantised, a few hundred MB resident. It
+#   keeps the same model family as the simulated side, and it fits beside a
+#   simulator and a Prometheus node-exporter on a 6 GB node. It is a small
+#   model and will answer like one; the point here is the plumbing.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+  namespace: llm-d
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+  # k3s's default local-path StorageClass. Node-local, so this pins the pod to
+  # whichever node it lands on — acceptable, and it means a pulled model
+  # survives a restart instead of being re-downloaded.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: llm-d
+  labels:
+    app: ollama
+spec:
+  replicas: 1
+  # The PVC is ReadWriteOnce and the old pod must release it before the new one
+  # can mount it, so a rolling update would deadlock.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:0.34.3
+          ports:
+            - name: http
+              containerPort: 11434
+          env:
+            # Bind beyond loopback, or the Service reaches nothing.
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+            # One model, one node, no GPU: keep it from spawning parallel
+            # runners that would each hold their own copy of the weights.
+            - name: OLLAMA_NUM_PARALLEL
+              value: "1"
+            - name: OLLAMA_MAX_LOADED_MODELS
+              value: "1"
+            # Unload after 5 minutes idle rather than holding RAM all day.
+            - name: OLLAMA_KEEP_ALIVE
+              value: "5m"
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 11434
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              # A 0.5B model quantised sits well under this; the headroom is
+              # for the context window during generation.
+              memory: 2Gi
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ollama-models
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: llm-d
+spec:
+  selector:
+    app: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434
+---
+# Same Gateway, second route.
+#
+#   /ollama/v1/chat/completions  ->  ollama  /v1/chat/completions
+#
+# ollama serves an OpenAI-compatible API under /v1, so the prefix is stripped
+# by the rewrite filter and the client-facing shape stays identical to the
+# pool's. The only difference a caller sees is the path — and that the answer
+# comes from a real model.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ollama
+  namespace: llm-d
+spec:
+  parentRefs:
+    - name: inference-gateway
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /ollama
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: ollama
+          port: 11434
