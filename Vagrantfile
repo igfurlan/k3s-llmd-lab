@@ -31,8 +31,8 @@
 #
 # WHY HYPER-V AT ALL
 #   VirtualBox has no AMD-V on this host and runs guests on NEM, where vCPUs are
-#   descheduled for seconds. See hyperv-migration-plan.md for the measurement,
-#   and archive/Vagrantfile.virtualbox for the configuration it replaces.
+#   descheduled for seconds. See docs/hyperv-migration-plan.md for the
+#   measurement that settled it.
 
 # VirtualBox is still installed on this host and Vagrant would otherwise pick it
 # first, silently building the wrong kind of VM. Setting the default here means

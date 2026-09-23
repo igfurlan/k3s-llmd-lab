@@ -186,7 +186,6 @@ VM down, attaches, and starts it again — and why provisioning waits for the se
 | [`manifests/monitoring/`](manifests/monitoring/) | Prometheus stack values, scrape config, dashboard JSON |
 | [`bench/`](bench/) | The A/B experiment: load generator, protocol, results |
 | [`docs/`](docs/) | The deep dives |
-| [`archive/`](archive/) | The VirtualBox Vagrantfile, kept with a header on why it was abandoned |
 
 ### Deep dives
 
@@ -217,15 +216,3 @@ rights. Binding `system:auth-delegator` fixes the checker, not the credential.
 Dashboard JSON lives in [`manifests/monitoring/dashboards/`](manifests/monitoring/dashboards/)
 and provisions from a ConfigMap, so Grafana deliberately has no persistence — the UI is never
 the only copy.
-
----
-
-## Scope
-
-Deliberately out: Rook/Ceph (three OSDs on one SSD is not redundancy), OVN-Kubernetes (no
-documented k3s path, and OpenShift installs it via an operator anyway), and Ansible (the
-Vagrantfile already provisions; a second configuration tool would be ceremony).
-
-The interesting thread left unexplored is **precise prefix-cache routing** — the simulators
-already publish `BlockStored` events over ZMQ, and consuming them would replace the router's
-block-rounded estimate with each pod's actual cache contents.
