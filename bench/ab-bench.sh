@@ -67,16 +67,26 @@ You are an infrastructure assistant embedded in a Kubernetes platform team's too
 EOF
 )
 
-# Per-user preamble. Requests from the same user share system + persona, so
-# their common prefix is ~290 tokens — several 64-token blocks deep.
+# Per-user preamble — roughly 200 tokens each, and DISTINCT.
+#
+# The length is the fix. In the first run these were single sentences of ~40
+# tokens, which at block-size 64 never filled a block, so the only cacheable
+# thing in the whole benchmark was the system prompt every user shares. Both
+# arms hit 74%, which was exactly 192/259 — the shared prefix and nothing else.
+# Routing had nothing to route for.
+#
+# At ~200 tokens a persona spans about three blocks of its own, so a user's
+# conversation has a cacheable identity. Keeping that identity on one pod is now
+# worth something, and scattering it across pods is now a loss — which is the
+# difference the experiment is supposed to measure.
 persona() {
   case "$1" in
-    0) echo "I run the platform team for a company serving a code completion model to about two thousand developers." ;;
-    1) echo "I am migrating a retrieval augmented generation service from a single GPU server onto a Kubernetes cluster." ;;
-    2) echo "I operate a customer support chatbot where conversations are long and the system prompt is enormous." ;;
-    3) echo "I am benchmarking inference gateways for a procurement decision and need defensible numbers." ;;
-    4) echo "I maintain the observability stack and I am adding dashboards for a new inference platform." ;;
-    *) echo "I am an SRE on call for an inference service that has been paging overnight for latency spikes." ;;
+    0) echo "I run the platform team for a company that serves a code completion model to about two thousand developers across four time zones. Our traffic is spiky around European morning and North American afternoon, and the same repository context gets sent with nearly every request because the editor plugin includes the open file and its imports. We run on three clusters, one per region, each with a handful of accelerators, and we have been arguing internally about whether to consolidate them into one larger cluster with global routing or keep them regional for latency. Our p99 matters more than our median because developers notice the slow completions and complain about those, not the fast ones. We are also under pressure to cut cost per completion by about thirty percent this year." ;;
+    1) echo "I am migrating a retrieval augmented generation service from a single large GPU server onto a Kubernetes cluster with several smaller accelerators. Every request arrives with a retrieved document set prepended to it, so prompts are long, highly variable in content, and almost never repeat exactly, although documents are reused heavily across users within a working session. The service backs an internal knowledge base used by about four hundred support engineers. My main worry is that moving from one machine to many will destroy whatever cache locality we currently get for free, because today every request lands on the same process and now they will be spread across pods. I need to understand what routing can recover before committing to the migration." ;;
+    2) echo "I operate a customer support chatbot where conversations run long and the system prompt is enormous, roughly four thousand tokens of policy, tone guidance, and escalation rules that must be present on every turn. A typical conversation is fifteen to twenty turns, and each turn resends the entire history, so prompts grow steadily through the conversation. We serve about twelve thousand conversations a day with strong daily peaks. What I care about most is time to first token, because a support agent is waiting and watching, and about cost, because resending that policy block on every turn is most of our token spend. I have been told prefix caching helps here but I have never measured it myself." ;;
+    3) echo "I am benchmarking inference gateways for a procurement decision and I need numbers that survive scrutiny from people who will be looking for reasons to reject them. We are comparing three approaches across latency, throughput, and operational complexity, and the vendors all publish benchmarks that show themselves winning, which tells me nothing except that benchmarks can be shaped. My traffic mix is mostly short prompts with a shared instruction header, plus a long tail of much larger requests from a batch pipeline that runs overnight. I want to know which conditions each approach actually wins under, not which one wins on a chart someone built to make it win." ;;
+    4) echo "I maintain the observability stack for a platform group and I am adding dashboards for a new inference serving layer that another team is deploying. I know Prometheus and Grafana well but I am new to language model serving specifically, and I am finding that the metric names are unfamiliar and the ones that look important are not always the ones that change when something goes wrong. I want to build panels that drive decisions rather than panels that look impressive in a review, which means I need to understand which number tells an operator to add replicas, which tells them to change a configuration, and which is just weather." ;;
+    *) echo "I am an SRE on call for an inference service that has been paging overnight for latency spikes that nobody can reproduce during working hours. The dashboards look healthy when I check them the next morning, the pods never restarted, there are no errors in the logs, and the only evidence is the alert itself and a handful of customer complaints. The service runs on virtual machines rather than bare metal, which I have started to suspect matters. I need a way to distinguish between the application being slow, the scheduler making bad decisions, and the machine underneath simply not running our processes when it says it is." ;;
   esac
 }
 

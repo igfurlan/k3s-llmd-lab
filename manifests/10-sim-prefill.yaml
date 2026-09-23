@@ -27,7 +27,13 @@ metadata:
     app: sim
     llm-d.ai/role: prefill
 spec:
-  replicas: 1
+  # THREE, because one made the A/B experiment meaningless.
+  #
+  # With a single pod per role the endpoint picker logs `num-of-candidates: 1`
+  # — there is no routing decision to make, so "prefix-aware routing" and
+  # "round-robin" are the same thing pointed at the same pod. Replicas are the
+  # precondition for the comparison, not a refinement of it.
+  replicas: 3
   selector:
     matchLabels:
       app: sim
@@ -53,8 +59,19 @@ spec:
             - "true"
             - "--block-size"
             - "64"
+            # 16 blocks = 1024 tokens, deliberately SMALL.
+            #
+            # At 1024 blocks (65,536 tokens) every pod could hold every user's
+            # context simultaneously, so scattering a conversation cost nothing
+            # and round-robin matched prefix-aware routing exactly. Locality
+            # only matters when memory is scarce; the first benchmark removed
+            # scarcity by accident and then measured its absence.
+            #
+            # Sized against the workload: shared prompt ~3 blocks, each user's
+            # persona ~3 more. Two users concentrated on one pod fit in ~9;
+            # six users scattered across every pod need ~21 and evict.
             - "--kv-cache-size"
-            - "1024"
+            - "16"
             # Real token IDs from the shared tokenizer service, so block hashes
             # agree with the router's.
             - "--render-url"

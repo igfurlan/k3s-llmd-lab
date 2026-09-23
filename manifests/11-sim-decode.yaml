@@ -27,7 +27,9 @@ metadata:
     app: sim
     llm-d.ai/role: decode
 spec:
-  replicas: 1
+  # Three, for the same reason as prefill: with one pod per role the picker
+  # has a single candidate and the A/B experiment compares nothing.
+  replicas: 3
   selector:
     matchLabels:
       app: sim
@@ -110,8 +112,11 @@ spec:
             - "true"
             - "--block-size"
             - "64"
+            # 16 blocks = 1024 tokens. Small on purpose -- see 10-sim-prefill.yaml
+            # for the sizing argument. Locality only matters when memory is
+            # scarce, and the first benchmark had none.
             - "--kv-cache-size"
-            - "1024"
+            - "16"
             # Real token IDs from the shared tokenizer service, so block hashes
             # agree with the router's.
             - "--render-url"

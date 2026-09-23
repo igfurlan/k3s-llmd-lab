@@ -99,13 +99,22 @@ router:
             weight: 3
           - pluginRef: queue-scorer
             weight: 1
-        # Decode: the work is long-lived and bandwidth-bound, so queue depth and
-        # cache headroom matter more than locality.
+        # Decode: queue depth and cache headroom matter, because the work is
+        # long-lived and bandwidth-bound.
+        #
+        # prefix-cache-scorer was added here after the first A/B run. The
+        # default decode profile is cache-blind, which is defensible when every
+        # split sends the prompt to a prefill pod — but a request the decider
+        # declines to split is prefilled locally by decode, and then locality
+        # matters on this side too. Leaving it out made half the traffic
+        # unroutable on the dimension the experiment was testing.
         - name: decode
           plugins:
           - pluginRef: decode-filter
-          - pluginRef: queue-scorer
+          - pluginRef: prefix-cache-scorer
             weight: 3
+          - pluginRef: queue-scorer
+            weight: 2
           - pluginRef: kv-cache-utilization-scorer
             weight: 2
 
