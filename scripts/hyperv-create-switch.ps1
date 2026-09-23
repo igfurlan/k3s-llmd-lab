@@ -16,7 +16,7 @@
   exists. The nodes still reach the internet, over their other adapter on the
   Default Switch.
 
-  There is no DHCP on an Internal switch — that is why the guests' addresses
+  There is no DHCP on an Internal switch - that is why the guests' addresses
   are set by a provisioner in the Vagrantfile rather than leased.
 
   Idempotent: safe to re-run, does nothing if the switch is already correct.
@@ -24,6 +24,11 @@
 .NOTES
   To undo everything this script did:
       Remove-VMSwitch -Name k3s-lab -Force
+
+  Keep this file ASCII-only. Windows PowerShell 5.1 reads a UTF-8 file with no
+  BOM as Windows-1252, so a UTF-8 em dash decodes to a curly closing quote,
+  which PowerShell accepts as a string delimiter - unbalancing every quote after
+  it. Harmless inside a comment, fatal inside code.
 #>
 
 [CmdletBinding()]
@@ -60,7 +65,7 @@ $ifAlias = "vEthernet ($SwitchName)"
 
 # Refuse to duplicate an address that already lives on another interface.
 # VirtualBox's host-only adapter holds 192.168.56.1 on this host, which is why
-# the lab moved to 192.168.58.0/24 — the same mistake in the other direction
+# the lab moved to 192.168.58.0/24 - the same mistake in the other direction
 # produces intermittent, hard-to-read unreachability.
 $clash = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     Where-Object { $_.IPAddress -eq $HostAddress -and $_.InterfaceAlias -ne $ifAlias }

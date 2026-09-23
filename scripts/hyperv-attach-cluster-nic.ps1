@@ -3,7 +3,7 @@
   Gives a Hyper-V VM a second network adapter on the cluster switch.
 
 .DESCRIPTION
-  Called by the Vagrantfile as an `after :up` / `after :reload` trigger — not
+  Called by the Vagrantfile as an `after :up` / `after :reload` trigger - not
   normally by hand. It exists because Vagrant's Hyper-V provider manages exactly
   one adapter per VM and offers no way to ask for a second
   (plugins/providers/hyperv/action/configure.rb passes a single SwitchID).
@@ -14,7 +14,7 @@
   exits immediately once the adapter exists.
 
   The new adapter lands AFTER the Vagrant-managed one. That ordering is load
-  bearing — Vagrant reads the guest's SSH address from adapter index 0
+  bearing - Vagrant reads the guest's SSH address from adapter index 0
   (scripts/get_network_config.ps1), which must stay the DHCP one.
 
 .PARAMETER VmName
@@ -25,6 +25,14 @@
 
 .PARAMETER AdapterName
   Name for the new adapter. Also how this script recognises its own work.
+
+.NOTES
+  Keep this file ASCII-only. Windows PowerShell 5.1 reads a UTF-8 file with no
+  BOM as Windows-1252, so a UTF-8 em dash (E2 80 94) decodes to three
+  characters, the last of which is a curly closing quote - and PowerShell
+  accepts curly quotes as string delimiters. One em dash in a string therefore
+  unbalances every quote after it, and the parse error is reported on a later,
+  innocent line.
 #>
 
 [CmdletBinding()]
@@ -54,7 +62,7 @@ if (Get-VMNetworkAdapter -VM $vm | Where-Object { $_.Name -eq $AdapterName }) {
 $wasRunning = $vm.State -eq "Running"
 
 if ($wasRunning) {
-    Write-Host "$VmName : generation $($vm.Generation) cannot hot-add a NIC — shutting down ..."
+    Write-Host "$VmName : generation $($vm.Generation) cannot hot-add a NIC - shutting down ..."
     # Graceful shutdown through the integration services. -Force only suppresses
     # the confirmation prompt; it does not pull the power.
     Stop-VM -VM $vm -Force
