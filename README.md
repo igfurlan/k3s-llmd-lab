@@ -17,12 +17,21 @@ and the orchestration is real**. That trade is deliberate, and explained below.
 
 1. **No GPU passthrough.** Discrete Device Assignment is a Windows *Server* feature, so the
    host's RTX 5070 Ti is invisible to every guest here.
-2. **vLLM's CPU backend requires AVX-512.** The host CPU (Ryzen 7 9800X3D) has it. Under
-   VirtualBox the guests saw `avx avx2` and nothing beyond, which ruled real vLLM out.
-   Whether Hyper-V passes AVX-512 through is **re-measured on first boot** — the provisioner
-   banner prints the flags, and if AVX-512 appears the plan gets a real vLLM option back.
-3. **6 GB nodes.** Even with the right instruction set, a real model's weights and KV cache
-   do not fit alongside a control plane and a gateway.
+2. **6 GB nodes.** A real model's weights and KV cache do not fit alongside a control plane,
+   a gateway and a tokenizer service.
+
+**One of the original three reasons turned out to be false, and it is worth recording.**
+The lab was designed around "vLLM's CPU backend needs AVX-512, and the guests do not have
+it" — measured under VirtualBox, where they reported `avx avx2` and nothing more. Measured
+again under Hyper-V, the same host passes the whole set through:
+
+```
+avx avx2 avx512f avx512bw avx512dq avx512vl avx512_bf16 avx512_vnni avx512_vbmi ...
+```
+
+So that constraint was the **hypervisor's, not the hardware's**. A real vLLM CPU backend is
+now possible here in principle, and only memory keeps it out. The provisioner banner prints
+these flags on every run, which is how the assumption got retested instead of inherited.
 
 The resolution is [`llm-d-inference-sim`](https://github.com/llm-d/llm-d-inference-sim) — the
 llm-d project's own GPU-free vLLM mock. It is OpenAI-API compliant, models prefill and decode
@@ -207,6 +216,30 @@ high-bandwidth ones. Node labels plus `nodeSelector` pin the pods, so
 In production the KV cache physically moves between the two, which llm-d does over NIXL.
 Here that transfer is **modelled, not real** — the configuration and routing are genuine,
 the speedup is not.
+
+## Observability
+
+Prometheus and Grafana run in-cluster (`kube-prometheus-stack`, trimmed for 6 GB nodes),
+scraping the model servers through a `PodMonitor` and the endpoint picker through an
+authenticated `ServiceMonitor`. Grafana is at `http://192.168.58.11:30300`.
+
+The dashboard JSON lives in
+[`manifests/monitoring/dashboards/`](manifests/monitoring/dashboards/) and provisions from a
+ConfigMap, so Grafana deliberately has no persistence — the UI is never the only copy.
+
+**[reading-the-dashboard.md](reading-the-dashboard.md) is the part worth reading.** It maps
+each panel to the decision it drives: which scorer weight to raise when one pod saturates
+while a sibling idles, when to stop disaggregating because the KV transfer costs more than
+the prefill it avoids, why adding replicas cannot fix a distribution fault, and how to scale
+prefill and decode independently.
+
+Two numbers from this cluster that frame the whole architecture:
+
+- Scheduling costs **95 µs** against a **23.8 ms** TTFT — the intelligence is ~0.4% of the
+  request.
+- Prefix cache hit ratio runs **33% on decode against 7% on prefill**, which is the split
+  working: repeated prompts land on decode and hit, while prefill only receives work the
+  decider has established *isn't* cached.
 
 ## Notes
 
