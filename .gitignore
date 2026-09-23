@@ -20,3 +20,7 @@ node-token
 .idea/
 Thumbs.db
 desktop.ini
+
+# Cards built for the write-up's images — screenshot sources, not part of the lab.
+# Kept locally only.
+docs/post-cards.html
