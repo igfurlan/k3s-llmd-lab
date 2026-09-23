@@ -29,7 +29,8 @@ kubectl apply -f ~/manifests/20-gateway.yaml
 | `10-sim-prefill.yaml` | Simulated model server, prefill role, pinned to `k3s-agent-1` |
 | `11-sim-decode.yaml` | Simulated model server, decode role, pinned to `k3s-agent-2` |
 | `20-gateway.yaml` | The Gateway, implemented by agentgateway |
-| `epp-pd-values.yaml` | Helm values for the endpoint picker, including the P/D decider |
+| `epp-values.yaml` | Helm values for the InferencePool and endpoint picker — baseline scheduling |
+| `epp-pd-values.yaml` | The same, plus prefill/decode disaggregation. Applied second, on purpose |
 
 The InferencePool and the endpoint picker are **not** manifests — they come from
 the `llm-d-router-gateway` Helm chart, with `epp-pd-values.yaml` supplying the

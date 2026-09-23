@@ -1,0 +1,43 @@
+# Helm values for the llm-d-router-gateway chart — BASELINE.
+#
+#   helm upgrade -i sim-pool oci://ghcr.io/llm-d/charts/llm-d-router-gateway \
+#     --version v0.10.0 --namespace llm-d -f ~/manifests/epp-values.yaml
+#
+# This installs the InferencePool and the endpoint picker with the chart's
+# default scheduling profile. No prefill/decode disaggregation — that is
+# epp-pd-values.yaml, applied afterwards as a deliberate second step so that a
+# failure there cannot be confused with a failure here.
+#
+# WHAT THE EPP IS
+#   The gateway calls it over ext_proc before choosing a backend, and it answers
+#   with the pod to use. Ordinary Kubernetes load balancing is round-robin and
+#   blind; this scores candidates on things that decide LLM latency — whose KV
+#   cache already holds this prefix, how deep each queue is. The scheduler is
+#   the part of this lab worth studying, and it behaves identically whether the
+#   model servers are simulated or real.
+
+router:
+  # Which pods form the pool. Both simulator Deployments carry `app: sim`, so
+  # this selects them and nothing else.
+  modelServers:
+    matchLabels:
+      app: sim
+
+  epp:
+    # The EPP sits in the request path: starve it and it looks like a slow model.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+# agentgateway implements InferencePool natively, so the chart must not deploy a
+# proxy of its own. Without this you get a second, redundant gateway.
+provider:
+  name: none
+
+# Let the chart write the HTTPRoute that points our Gateway at this pool.
+httpRoute:
+  create: true
+  inferenceGatewayName: inference-gateway
