@@ -322,3 +322,64 @@ Add the `pd-sidecar` container to `sim-decode`, fronting the simulator: the side
 port 8000 (the InferencePool's target), the simulator moves behind it. One consequence to
 remember — the EPP's `metrics-data-source` then scrapes the sidecar's port rather than the
 model server's, which is what the plugin's optional `port` parameter exists for.
+
+---
+
+## P/D in the data path, and the arithmetic behind a split
+
+Adding `ghcr.io/llm-d/llm-d-router-disagg-sidecar` to the decode pod closed the gap. The
+sidecar takes the InferencePool's target port (8000) and the simulator moves behind it
+(8200); everything the sidecar does not handle itself is proxied straight through, `/metrics`
+included, so the EPP's scrape needs no reconfiguration.
+
+Proof it reached the data path — `sim-prefill` logging a request for the first time:
+
+```
+http.go:283  "Received" new HTTP="chat completion request (req id 322c8bc9...)"
+worker.go:74 "Finished processing request"
+```
+
+Only **prefill** is fronted by nothing and **decode** is fronted by the sidecar. That
+asymmetry is the design: only decode receives the `x-prefiller-host-port` header, because
+only decode needs to go and fetch a prefill.
+
+### What `nonCachedTokens` actually does
+
+Four identical requests, `nonCachedTokens: 1`, with the decider's own debug output:
+
+| Request | `absolute hit prefix len` | `prompt length` | Suffix | Decision |
+|---|---|---|---|---|
+| 1 | 0 | 109 | 109 | **split** — prefill served it |
+| 2-4 | 128 | 109 | **-19** | `using decode profile only` |
+
+From `prefix_based_pd_decider.go`:
+
+```go
+hitPrefixTokens = info.CachedBlockCount() * info.BlockSizeTokens()
+nonCachedTokens = inputTokens - hitPrefixTokens
+return nonCachedTokens >= d.config.NonCachedTokens
+```
+
+`1` therefore means *"split when at least one token of this prompt is not already cached on
+the pod that would decode it"* — not "always split", which is what this document said before
+the measurement. `0` disables the plugin outright, which is what silently disabled P/D on the
+first cluster.
+
+**The economics it encodes.** Remote prefill buys parallelism and pays for it with a KV
+transfer. When the decode pod already holds the prompt there is no prefill work left to move,
+so the transfer would be pure cost. Splitting once on a cold prompt and never again for that
+prompt is the optimal behaviour, not a bug — which is why an experiment that sends the *same*
+prompt repeatedly makes a working P/D setup look broken.
+
+### Two measurement artifacts worth knowing
+
+**The suffix went negative.** 109 tokens occupy two 64-token blocks, so the router credits
+128 tokens of cache against a 109-token prompt. Block-granular accounting rounds up on the
+router side.
+
+**Two components disagree about both numbers.** The EPP reports a 109-token prompt and 128
+cached tokens; the simulator reports 102 queried tokens and 64 hits. Same render service, but
+the EPP tokenizes through the chat template while the simulator tokenizes what it assembles,
+and the router counts *stored* blocks where the server counts *matched* ones. Neither is
+wrong; they answer different questions. A dashboard that plots them as if they were the same
+quantity would be.
