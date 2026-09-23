@@ -270,15 +270,62 @@ curl.exe -s -o NUL -L -r 0-1 -w "%{http_code}" <box-url>   # expect 206
 
 ---
 
-## Open items
+## Open items — all closed by the migration
 
-- **Re-test the kernel pin.** Added under a disproved hypothesis. With 4 working
-  vCPUs the newer kernel will likely boot fine.
-- **Root filesystem is 8.9 GB with ~5.6 GB free.** Container images for llm-d,
-  Prometheus and an ollama model will pressure this. Cheapest to fix at a rebuild.
-- **AMD-V is unavailable to VirtualBox.** Recovering it means disabling VBS /
-  Memory Integrity on the host — a real security trade-off on a daily-driver
-  machine, and a deliberate decision rather than an oversight.
+Each of these was listed as outstanding while the lab still ran on VirtualBox.
+They were closed on 2026-09-23 by moving to Hyper-V rather than by being fixed
+individually, which is itself the point: they were symptoms of one cause.
+
+- ~~**Re-test the kernel pin.**~~ Removed. The guests run
+  `5.14.0-687.49.1.el9_8` and Rocky 9.8 after a full `dnf update`.
+- ~~**Root filesystem is 8.9 GB.**~~ Gone with the box. `generic/rocky9` is built
+  at 128 GB with `autopart`, so the 30 GB data disk and its XFS mount were
+  dropped entirely.
+- ~~**AMD-V is unavailable to VirtualBox.**~~ Still true, and now irrelevant.
+  Memory Integrity stays on; the VMs run on the hypervisor Windows already has
+  rather than on one competing with it.
+
+---
+
+## Epilogue: the migration, measured
+
+The postmortem above is about one wrong setting. The conclusion underneath it —
+that the host itself was the limit — took another day to reach, and was settled
+by measurement rather than argument.
+
+The test is deliberately dumb: sleep 50 ms, fifty times, and see how long it
+actually takes. A guest that is being scheduled returns ~51 ms. A guest that is
+being descheduled cannot.
+
+| | VirtualBox (NEM) | Hyper-V, first boot | Hyper-V, after reboot |
+|---|---|---|---|
+| `sleep 0.05` × 25 | multi-second stalls | `51 51 51 … 50 51` | `52 51 52 … 51 52` |
+| `dmesg \| grep -c hrtimer` | 14 server / 6 per agent | **0** | **0** |
+| Load average at rest | 13–19, with ~73% idle CPU | — | **0.03** |
+| Nodes | flapping NotReady | 3 × Ready | 3 × Ready, unattended |
+
+The Hyper-V columns were taken after a full `dnf update` and a k3s install, not
+on an idle VM — the harder version of the test.
+
+`hrtimer: interrupt took 3249948 ns` was the guest kernel reporting that it had
+not run for 3.2 seconds. Every failure that looked like a Kubernetes problem
+descended from that single fact: containerd RPCs hitting `DeadlineExceeded`,
+PLEG going stale, metrics-server consuming 90% of a vCPU while failing its own
+scrapes, and a control plane that could not finish starting in 19 minutes.
+
+**The load average is the detail worth keeping.** 13–19 while the CPU is 73%
+idle is not a busy machine; it is a queue of processes that are runnable and not
+being run. That number alone should have redirected the investigation a day
+earlier than it did.
+
+### Lesson 5
+
+**When every layer misbehaves at once, suspect the layer underneath them all.**
+Four separate components were investigated on their own merits — containerd, the
+kubelet, metrics-server, the API server. Each had a plausible local explanation.
+None of them was wrong in itself; all four were downstream of a hypervisor that
+could not keep its guests on a CPU. A fault that is everywhere is rarely in any
+of the places it shows up.
 
 ---
 

@@ -221,10 +221,16 @@ the speedup is not.
   VMs on one spindle means head thrash.
 - **The hypervisor choice was measured, not assumed.** Windows keeps a hypervisor resident
   for Memory Integrity, so VirtualBox never gets AMD-V here and falls back to NEM, where
-  guest vCPUs are descheduled for seconds. A 50 ms sleep, 50 samples: multi-second stalls on
-  VirtualBox, 51–52 ms every time on Hyper-V; `hrtimer` warnings 14/6/6 versus 0. Memory
-  Integrity stays on — Hyper-V *is* the hypervisor it requires, so this removes the
-  indirection instead of fighting it.
+  guest vCPUs are descheduled for seconds. Sleep 50 ms, 25 times, and compare:
+
+  ```
+  VirtualBox (NEM)   multi-second stalls   hrtimer warnings 14/6/6   load 13-19 at 73% idle
+  Hyper-V            52 51 52 ... 51 52    hrtimer warnings 0        load 0.03
+  ```
+
+  Memory Integrity stays on — Hyper-V *is* the hypervisor it requires, so this removes the
+  indirection instead of fighting it. [postmortem-vagrant.md](postmortem-vagrant.md) has the
+  full account.
 - **One VirtualBox setting cost four hours.** `ioapic=off` silently caps a guest at a single
   CPU while still reporting four. [postmortem-vagrant.md](postmortem-vagrant.md) has the
   full account, including the diagnostics that actually discriminated between "slow" and

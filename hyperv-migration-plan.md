@@ -1,6 +1,6 @@
 # Migration plan — VirtualBox → Hyper-V
 
-**Status:** research complete, Vagrantfile written, not yet run. Written 2026-09-22 as a
+**Status:** DONE. Executed 2026-09-23; the cluster runs on Hyper-V and the migration is verified (see the epilogue in postmortem-vagrant.md). Written 2026-09-22 as a
 handoff, after the measurement below settled the question; the research section was filled
 in the same day from the Vagrant and box sources rather than from guesswork.
 
