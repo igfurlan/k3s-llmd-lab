@@ -22,8 +22,6 @@
     --active-bg: #fcefd9;
     --blocked:   #a8322a;
     --blocked-bg:#fbe7e5;
-    --idle:      #6b7a89;
-    --idle-bg:   #e8edf2;
 
     --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
     --f-body:    "Source Sans 3", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -32,6 +30,7 @@
 
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
+      color-scheme: dark;
       --bg:        #0d1319;
       --surface:   #151d26;
       --surface-2: #1c2631;
@@ -49,12 +48,11 @@
       --active-bg: #332409;
       --blocked:   #ff7a6d;
       --blocked-bg:#3a1714;
-      --idle:      #8496a6;
-      --idle-bg:   #1c2631;
     }
   }
 
   :root[data-theme="dark"] {
+    color-scheme: dark;
     --bg:        #0d1319;
     --surface:   #151d26;
     --surface-2: #1c2631;
@@ -72,8 +70,6 @@
     --active-bg: #332409;
     --blocked:   #ff7a6d;
     --blocked-bg:#3a1714;
-    --idle:      #8496a6;
-    --idle-bg:   #1c2631;
   }
 
   * { box-sizing: border-box; }
@@ -90,7 +86,7 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  .wrap { max-width: 860px; margin: 0 auto; }
+  .wrap { max-width: 880px; margin: 0 auto; }
 
   /* ---------- masthead ---------- */
   .masthead { padding-block: 52px 36px; border-bottom: 2px solid var(--ink); }
@@ -106,12 +102,8 @@
     line-height: 1.04; letter-spacing: -0.025em;
     margin: 0 0 18px; text-wrap: balance;
   }
-  .standfirst {
-    font-size: 1.12rem; color: var(--ink-2);
-    max-width: 62ch; margin: 0 0 28px;
-  }
+  .standfirst { font-size: 1.12rem; color: var(--ink-2); max-width: 62ch; margin: 0 0 28px; }
   .standfirst strong { color: var(--ink); font-weight: 600; }
-
   .meta-row {
     display: flex; flex-wrap: wrap; gap: 10px 26px;
     font-family: var(--f-mono); font-size: 12px; color: var(--ink-3);
@@ -121,7 +113,6 @@
   /* ---------- sections ---------- */
   section { padding-block: 44px; border-bottom: 1px solid var(--border); }
   section:last-of-type { border-bottom: none; }
-
   h2 {
     font-family: var(--f-display);
     font-weight: 600; font-size: 1.5rem; letter-spacing: -0.015em;
@@ -129,55 +120,85 @@
   }
   .sect-note { color: var(--ink-3); font-size: 0.94rem; margin: 0 0 26px; max-width: 64ch; }
   p { max-width: 66ch; }
-
   code {
     font-family: var(--f-mono); font-size: 0.87em;
     background: var(--surface-2); color: var(--ink);
-    padding: 1px 5px; border-radius: 3px;
-    border: 1px solid var(--border);
+    padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border);
   }
+  a { color: var(--accent); }
 
-  /* ---------- the constraint callout ---------- */
-  .constraint {
-    background: var(--surface);
-    border: 1px solid var(--border-2);
-    border-left: 4px solid var(--blocked);
+  /* ---------- findings ---------- */
+  .findings { display: grid; gap: 18px; }
+  .finding {
+    display: grid; grid-template-columns: 116px 1fr; gap: 22px;
+    padding: 18px 20px; background: var(--surface);
+    border: 1px solid var(--border); border-left: 3px solid var(--accent);
     border-radius: 3px;
-    padding: 24px 26px;
-    margin-block: 4px 26px;
   }
-  .constraint h3 {
-    font-family: var(--f-display); font-size: 1.08rem; font-weight: 600;
-    margin: 0 0 12px; color: var(--ink);
+  .f-num {
+    font-family: var(--f-mono); font-variant-numeric: tabular-nums;
+    font-size: 1.45rem; font-weight: 700; color: var(--accent);
+    line-height: 1.15; letter-spacing: -0.02em;
   }
-  .constraint p { margin: 0 0 12px; font-size: 0.97rem; color: var(--ink-2); }
-  .constraint p:last-child { margin-bottom: 0; }
+  .f-num small {
+    display: block; font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--ink-3); margin-top: 5px;
+  }
+  .f-body { margin: 0; font-size: 0.95rem; color: var(--ink-2); max-width: 60ch; }
+  .f-body b { color: var(--ink); font-weight: 600; }
+  .f-body .cost { color: var(--blocked); font-weight: 600; }
 
-  .chain { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 9px; }
-  .chain li {
-    display: grid; grid-template-columns: 22px 1fr; gap: 11px;
-    align-items: start; font-size: 0.95rem; color: var(--ink-2);
+  /* ---------- diagrams ---------- */
+  figure { margin: 26px 0 0; }
+  .diagram-box {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 3px; padding: 18px 14px; overflow-x: auto;
   }
-  .chain .n {
-    font-family: var(--f-mono); font-size: 11px; font-weight: 700;
-    color: var(--blocked); background: var(--blocked-bg);
-    border-radius: 2px; text-align: center; line-height: 20px; height: 20px;
-    margin-top: 2px;
-  }
-  .chain b { color: var(--ink); font-weight: 600; }
+  .diagram-box svg { display: block; width: 100%; min-width: 620px; height: auto; }
+  figcaption { font-size: 0.86rem; color: var(--ink-3); margin-top: 11px; max-width: 64ch; }
+  .d-box    { fill: var(--surface-2); stroke: var(--border-2); stroke-width: 1; }
+  .d-box-2  { fill: var(--surface-3); stroke: var(--border-2); stroke-width: 1; }
+  .d-host   { fill: var(--surface-3); stroke: var(--ink-3); stroke-width: 1; }
+  .d-pool   { fill: none; stroke: var(--accent); stroke-width: 1; stroke-dasharray: 5 4; }
+  .d-line   { stroke: var(--accent); stroke-width: 2; fill: none; }
+  .d-line-muted { stroke: var(--ink-3); stroke-width: 1.5; fill: none; stroke-dasharray: 4 3; }
+  .d-label  { fill: var(--ink); font-family: var(--f-display); font-size: 13px; font-weight: 600; }
+  .d-mono   { fill: var(--accent); font-family: var(--f-mono); font-size: 11px; }
+  .d-mono-muted { fill: var(--ink-3); font-family: var(--f-mono); font-size: 11px; }
+  .d-cap    { fill: var(--ink-3); font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.06em; }
+  .d-switch { fill: var(--accent); }
+  .d-head   { fill: var(--accent); }
+  .d-head-muted { fill: var(--ink-3); }
 
-  .verdict {
-    background: var(--accent-2); border: 1px solid var(--accent);
-    border-radius: 3px; padding: 16px 18px; margin-top: 18px;
+  /* ---------- bars ---------- */
+  .bars { margin-top: 8px; display: grid; gap: 16px; max-width: 620px; }
+  .bar-row { display: grid; grid-template-columns: 132px 1fr; gap: 14px; align-items: center; }
+  .bar-label { font-size: 0.88rem; color: var(--ink-2); }
+  .bar-label b { display: block; color: var(--ink); font-weight: 600; }
+  .bar-track {
+    position: relative; height: 30px; background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 2px;
   }
-  .verdict p { margin: 0; font-size: 0.95rem; color: var(--ink); }
-  .verdict .label {
-    font-family: var(--f-mono); font-size: 10px; font-weight: 700;
-    letter-spacing: 0.12em; text-transform: uppercase;
-    color: var(--accent); display: block; margin-bottom: 7px;
+  .bar-fill {
+    height: 100%; background: var(--accent); border-radius: 1px 0 0 1px;
+    display: flex; align-items: center; justify-content: flex-end;
+    padding-right: 8px;
+  }
+  .bar-fill.control { background: var(--ink-3); }
+  .bar-fill span {
+    font-family: var(--f-mono); font-size: 12px; font-weight: 700;
+    color: var(--surface); font-variant-numeric: tabular-nums;
+  }
+  .ceiling {
+    position: absolute; top: -6px; bottom: -6px; width: 2px;
+    background: var(--blocked);
+  }
+  .ceiling-note {
+    grid-column: 2; font-family: var(--f-mono); font-size: 10.5px;
+    color: var(--blocked); letter-spacing: 0.04em; margin-top: -6px;
   }
 
-  /* ---------- node table ---------- */
+  /* ---------- tables ---------- */
   .tbl-scroll { overflow-x: auto; margin-block: 22px; }
   table { border-collapse: collapse; width: 100%; min-width: 520px; font-size: 0.9rem; }
   th {
@@ -192,125 +213,54 @@
   td:first-child { color: var(--ink); font-weight: 600; }
   .mono { font-family: var(--f-mono); font-size: 0.86rem; font-variant-numeric: tabular-nums; }
 
-  /* ---------- diagram ---------- */
-  figure { margin: 26px 0 0; }
-  .diagram-box {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 3px; padding: 18px 14px; overflow-x: auto;
+  /* ---------- silent failures ---------- */
+  .traps { display: grid; gap: 14px; margin-top: 8px; }
+  .trap {
+    padding: 16px 18px; background: var(--surface);
+    border: 1px solid var(--border); border-left: 3px solid var(--blocked);
+    border-radius: 3px;
   }
-  .diagram-box svg { display: block; width: 100%; min-width: 560px; height: auto; }
-  figcaption {
-    font-size: 0.86rem; color: var(--ink-3); margin-top: 11px; max-width: 62ch;
+  .trap h3 {
+    font-family: var(--f-display); font-size: 1rem; font-weight: 600;
+    margin: 0 0 4px; color: var(--ink);
   }
-  .d-box   { fill: var(--surface-2); stroke: var(--border-2); stroke-width: 1; }
-  .d-host  { fill: var(--surface-3); stroke: var(--ink-3); stroke-width: 1; }
-  .d-line  { stroke: var(--accent); stroke-width: 2; fill: none; }
-  .d-line-muted { stroke: var(--ink-3); stroke-width: 1.5; fill: none; stroke-dasharray: 4 3; }
-  .d-label { fill: var(--ink); font-family: var(--f-display); font-size: 13px; font-weight: 600; }
-  .d-mono  { fill: var(--accent); font-family: var(--f-mono); font-size: 11px; }
-  .d-mono-muted { fill: var(--ink-3); font-family: var(--f-mono); font-size: 11px; }
-  .d-cap   { fill: var(--ink-3); font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.06em; }
-  .d-switch { fill: var(--accent); }
-
-  /* ---------- phases ---------- */
-  .phases { display: grid; gap: 0; margin-top: 8px; }
-  .phase {
-    display: grid; grid-template-columns: 52px 1fr; gap: 20px;
-    padding-block: 22px; border-top: 1px solid var(--border);
+  .trap .looked {
+    font-family: var(--f-mono); font-size: 11px; color: var(--blocked);
+    display: block; margin-bottom: 9px;
   }
-  .phase:first-child { border-top: 2px solid var(--border-2); }
-  .ph-num {
-    font-family: var(--f-mono); font-size: 1.45rem; font-weight: 700;
-    color: var(--border-2); line-height: 1; padding-top: 3px;
-    font-variant-numeric: tabular-nums;
-  }
-  .phase[data-state="done"]   .ph-num { color: var(--done); }
-  .phase[data-state="active"] .ph-num { color: var(--active); }
-
-  .ph-head {
-    display: flex; flex-wrap: wrap; align-items: baseline;
-    gap: 8px 12px; margin-bottom: 7px;
-  }
-  .ph-title {
-    font-family: var(--f-display); font-size: 1.09rem; font-weight: 600;
-    color: var(--ink); margin: 0;
-  }
-  .pill {
-    font-family: var(--f-mono); font-size: 9.5px; font-weight: 700;
-    letter-spacing: 0.1em; text-transform: uppercase;
-    padding: 3px 8px; border-radius: 2px; white-space: nowrap;
-    background: var(--idle-bg); color: var(--idle);
-  }
-  .pill.done   { background: var(--done-bg);   color: var(--done); }
-  .pill.active { background: var(--active-bg); color: var(--active); }
-  .pill.rev    { background: var(--accent-2);  color: var(--accent); }
-
-  .ph-body { color: var(--ink-2); font-size: 0.95rem; margin: 0; max-width: 62ch; }
-  .ph-detail {
-    margin-top: 11px; padding: 11px 14px;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 3px; font-size: 0.87rem; color: var(--ink-2);
-    max-width: 62ch;
-  }
-  .ph-detail .k {
-    font-family: var(--f-mono); font-size: 9.5px; font-weight: 700;
-    letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3);
-    display: block; margin-bottom: 5px;
-  }
-  .ph-detail code { background: var(--surface-2); }
+  .trap p { margin: 0; font-size: 0.92rem; color: var(--ink-2); max-width: 62ch; }
 
   /* ---------- decisions ---------- */
   .decisions { display: grid; gap: 14px; margin-top: 8px; }
   .dec {
-    display: grid; grid-template-columns: 1fr; gap: 5px;
     padding: 16px 18px; background: var(--surface);
     border: 1px solid var(--border); border-radius: 3px;
   }
-  .dec-q {
-    font-family: var(--f-display); font-size: 0.97rem; font-weight: 600; color: var(--ink);
-  }
-  .dec-a { font-size: 0.91rem; color: var(--ink-2); }
-  .dec-a .chose {
-    font-family: var(--f-mono); font-size: 0.85rem; color: var(--accent); font-weight: 500;
-  }
+  .dec-q { font-family: var(--f-display); font-size: 0.97rem; font-weight: 600; color: var(--ink); margin-bottom: 5px; }
+  .dec-a { font-size: 0.91rem; color: var(--ink-2); max-width: 62ch; }
+  .dec-a .chose { font-family: var(--f-mono); font-size: 0.85rem; color: var(--accent); font-weight: 500; }
 
-  /* ---------- gates ---------- */
-  .gates { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 11px; }
-  .gates li {
-    display: grid; grid-template-columns: 15px 1fr; gap: 13px; align-items: start;
-    font-size: 0.94rem; color: var(--ink-2);
+  .verdict {
+    background: var(--accent-2); border: 1px solid var(--accent);
+    border-radius: 3px; padding: 16px 18px; margin-top: 22px;
   }
-  .gates .mark {
-    width: 15px; height: 15px; margin-top: 4px; border-radius: 2px;
-    border: 1.5px solid var(--border-2); background: var(--surface);
-    position: relative;
-  }
-  .gates .mark.ok { border-color: var(--done); background: var(--done); }
-  .gates .mark.ok::after {
-    content: ""; position: absolute; left: 4px; top: 1px;
-    width: 4px; height: 8px; border: solid var(--surface);
-    border-width: 0 1.8px 1.8px 0; transform: rotate(42deg);
-  }
-  .gates .result {
-    display: block; margin-top: 5px; font-family: var(--f-mono);
-    font-size: 0.82rem; color: var(--done);
-  }
-  .gates .result.warn { color: var(--active); }
-  .gates b { color: var(--ink); font-weight: 600; }
-  .gates .cmd {
-    display: block; margin-top: 4px; font-family: var(--f-mono);
-    font-size: 0.82rem; color: var(--accent);
+  .verdict p { margin: 0; font-size: 0.95rem; color: var(--ink); }
+  .verdict .label {
+    font-family: var(--f-mono); font-size: 10px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--accent); display: block; margin-bottom: 7px;
   }
 
   footer {
     padding-block: 34px 0; color: var(--ink-3); font-size: 0.85rem;
     border-top: 1px solid var(--border);
   }
-  footer p { max-width: 62ch; margin: 0; }
+  footer p { max-width: 64ch; margin: 0 0 10px; }
 
   @media (max-width: 560px) {
-    .phase { grid-template-columns: 38px 1fr; gap: 14px; }
-    .ph-num { font-size: 1.2rem; }
+    .finding { grid-template-columns: 1fr; gap: 10px; }
+    .bar-row { grid-template-columns: 1fr; gap: 6px; }
+    .ceiling-note { grid-column: 1; }
     .masthead { padding-block: 36px 28px; }
   }
 </style>
@@ -318,406 +268,349 @@
 <div class="wrap">
 
   <header class="masthead">
-    <p class="eyebrow">Homelab project · started 20 Sep 2026</p>
+    <p class="eyebrow">Homelab project · Sep 2026 · igfurlan/k3s-llmd-lab</p>
     <h1>Simulated Inference Lab</h1>
     <p class="standfirst">
-      A three-node <strong>k3s</strong> cluster on VirtualBox, running the <strong>llm-d</strong>
-      distributed inference stack. The GPU in this machine is unreachable from the VMs, so the
-      inference is simulated and the orchestration is real — which is the half worth learning.
+      A three-node <strong>k3s</strong> cluster on a Windows desktop, running the
+      <strong>llm-d</strong> inference stack end to end — Gateway API with the Inference
+      Extension, an endpoint picker that routes on KV-cache state, prefill/decode
+      disaggregation, and Prometheus watching all of it. The model servers are simulators;
+      <strong>the orchestration is real</strong>, and that is the half worth learning.
     </p>
     <div class="meta-row">
-      <span><b>Host</b> Ryzen 7 9800X3D · 30.8 GB · Windows 11 Pro</span>
+      <span><b>Host</b> Ryzen 7 9800X3D · 32 GB · Windows 11 Pro · Hyper-V</span>
       <span><b>Guests</b> Rocky Linux 9 · 3 × 4 vCPU / 6 GB</span>
     </div>
   </header>
 
   <section>
-    <h2>The constraint that shapes everything</h2>
+    <h2>What the lab found</h2>
     <p class="sect-note">
-      Discovered before building, not after. It rewrites phases 4 through 6 and it belongs
-      in the write-up, not hidden.
+      Measured on the cluster, including the measurements that went against expectation.
+      Anyone can reproduce a vendor's claim; the useful part is where it stops holding.
     </p>
 
-    <div class="constraint">
-      <h3>Real vLLM cannot run in these VMs</h3>
-      <ol class="chain">
-        <li><span class="n">1</span><span><b>VirtualBox has no GPU passthrough.</b> The RTX 5070 Ti is invisible to every guest. Not a tuning problem — the feature does not exist.</span></li>
-        <li><span class="n">2</span><span><b>vLLM's CPU backend requires AVX-512.</b> The 9800X3D has it (verified <code>PF_AVX512F: True</code>), but VirtualBox has never exposed AVX-512 to guests.</span></li>
-        <li><span class="n">3</span><span><b>Hyper-V compatibility mode compounds it.</b> Windows keeps a hypervisor resident, so VirtualBox loses nested paging and can drop even plain AVX2 from the guest.</span></li>
-      </ol>
-      <p>
-        Three independent facts, any one of which is disqualifying on its own.
-      </p>
-      <p>
-        <b>Now measured, not predicted.</b> The running guests report
-        <code>avx avx2</code> and nothing beyond — AVX-512 is absent exactly as expected, and
-        point 3's worst case didn't land: AVX2 survived, so ollama gets its fast path.
-      </p>
+    <div class="findings">
 
-      <div class="verdict">
-        <span class="label">Resolution</span>
-        <p>
-          Use <code>llm-d-inference-sim</code> — the llm-d project's own GPU-free vLLM mock.
-          It is OpenAI-API compliant, models prefill and decode latency, degrades under
-          concurrency, and emits vLLM-compatible Prometheus metrics. The gateway, the
-          scheduler, the routing and the entire observability phase exercise identically.
-          Only the tensor math is fake. Real inference comes from <strong>ollama</strong>,
-          which is built for CPU.
+      <div class="finding">
+        <div class="f-num">82.6%<small>vs 78.4%</small></div>
+        <p class="f-body">
+          <b>Prefix-aware routing beat round-robin on identical traffic</b> — and against the
+          86.4% ceiling set by 64-token block granularity, that is capturing 96% of the
+          achievable versus 91%. Round-robin recomputes about a quarter more prompt tokens.
+          <span class="cost">It cost 2.5× the client latency to do it</span>, because a
+          simulated prefill is nearly free and there is nothing to win back.
         </p>
       </div>
+
+      <div class="finding">
+        <div class="f-num">74.1%<small>both arms, run 1</small></div>
+        <p class="f-body">
+          <b>The first version of that experiment found nothing</b>, and the reason is the
+          more useful half. 74% turned out to be exactly <code>192/259</code> — the shared
+          system prompt and nothing else. Per-user context was 40 tokens, under the 64-token
+          block size, so it could never be cached; the cache held 65,536 tokens so nothing
+          evicted; and with one pod per role the picker logged
+          <code>num-of-candidates: 1</code>. <b>Cache-aware routing needs distinguishing
+          prefixes that span whole blocks, memory scarce enough to evict, and more than one
+          candidate.</b>
+        </p>
+      </div>
+
+      <div class="finding">
+        <div class="f-num">95 µs<small>of a 23.8 ms ttft</small></div>
+        <p class="f-body">
+          <b>Scheduling is 0.4% of the request.</b> The endpoint picker sits in the request
+          path — every request waits on it — so this ratio, not the absolute number, is what
+          justifies putting a scheduler there at all. Past roughly 5%, the per-plugin panel
+          says which scorer to drop.
+        </p>
+      </div>
+
+      <div class="finding">
+        <div class="f-num">0<small>hrtimer warnings</small></div>
+        <p class="f-body">
+          <b>Two days were lost to a hypervisor, not to Kubernetes.</b> VirtualBox never gets
+          AMD-V on this host — Windows holds the hypervisor for Memory Integrity — so guests
+          ran on NEM and were descheduled for seconds. A 50 ms sleep, 25 samples: multi-second
+          stalls against a flat <code>51 51 51 … 50 51</code> on Hyper-V; 14/6/6 <code>hrtimer</code>
+          warnings against zero; load average 13–19 at 73% idle CPU against 0.03.
+        </p>
+      </div>
+
     </div>
   </section>
 
   <section>
-    <h2>Cluster topology</h2>
+    <h2>How a request moves</h2>
     <p class="sect-note">
-      Three identical nodes on a VirtualBox host-only network, provisioned by a single
-      pinned Vagrantfile.
-    </p>
-
-    <div class="tbl-scroll">
-      <table>
-        <thead>
-          <tr><th>Node</th><th>Role</th><th>Host-only IP</th><th>vCPU</th><th>RAM</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>k3s-server</td><td>control plane + workload</td><td class="mono">192.168.56.11</td><td class="mono">4</td><td class="mono">6144 MB</td></tr>
-          <tr><td>k3s-agent-1</td><td>workload</td><td class="mono">192.168.56.12</td><td class="mono">4</td><td class="mono">6144 MB</td></tr>
-          <tr><td>k3s-agent-2</td><td>workload</td><td class="mono">192.168.56.13</td><td class="mono">4</td><td class="mono">6144 MB</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <p style="font-size:0.9rem;color:var(--ink-3);">
-      18 GB of 30.8 GB committed, leaving ~12 GB for Windows. Box pinned to
-      <code>rockylinux/9 v5.0.0</code>; VM disks live on the NVMe, never the HDD.
-      Each node also carries a 30 GB disk mounted at <code>/var/lib/rancher</code>, because
-      the box's 8.9 GB root cannot hold containerd images, local-path volumes and a model.
+      One gateway, three paths through it. The middle one is the lab's subject; the other two
+      exist to compare against it and to prove the plumbing is real.
     </p>
 
     <figure>
       <div class="diagram-box">
-        <svg viewBox="0 0 700 372" xmlns="http://www.w3.org/2000/svg" role="img"
-             aria-label="Network topology: each VM has a NAT adapter with the identical address 10.0.2.15 and a host-only adapter on the 192.168.56.0/24 network that carries node-to-node traffic.">
+        <svg viewBox="0 0 780 420" xmlns="http://www.w3.org/2000/svg" role="img"
+             aria-label="A request enters the agentgateway on port 80. For /v1/chat/completions the gateway calls the endpoint picker over ext_proc, which returns the pods to use; the request goes to a decode pod whose sidecar fetches the prefill and receives the KV cache. A /rr path bypasses the picker and round-robins over the same pods, and a /ollama path reaches a real model.">
+          <defs>
+            <marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+              <polygon class="d-head" points="0,0 8,4 0,8"></polygon>
+            </marker>
+            <marker id="ah-m" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+              <polygon class="d-head-muted" points="0,0 8,4 0,8"></polygon>
+            </marker>
+            <marker id="ah-s" markerWidth="8" markerHeight="8" refX="1" refY="4" orient="auto-start-reverse">
+              <polygon class="d-head" points="0,0 8,4 0,8"></polygon>
+            </marker>
+          </defs>
 
-          <!-- Windows host -->
-          <rect class="d-host" x="255" y="10" width="190" height="42" rx="3"></rect>
-          <text class="d-label" x="350" y="29" text-anchor="middle">Windows host</text>
-          <text class="d-mono"  x="350" y="44" text-anchor="middle">192.168.56.1</text>
-          <path class="d-line" d="M350 52 L350 96"></path>
+          <!-- client -->
+          <rect class="d-box" x="12" y="164" width="90" height="36" rx="3"></rect>
+          <text class="d-mono-muted" x="57" y="186" text-anchor="middle">curl</text>
+          <path class="d-line" d="M102 182 L134 182" marker-end="url(#ah)"></path>
 
-          <!-- host-only switch bus -->
-          <rect class="d-switch" x="40" y="96" width="620" height="3" rx="1.5"></rect>
-          <text class="d-cap" x="40" y="88">VIRTUALBOX HOST-ONLY SWITCH — 192.168.56.0/24</text>
+          <!-- endpoint picker -->
+          <rect class="d-box-2" x="140" y="24" width="150" height="58" rx="3"></rect>
+          <text class="d-label" x="215" y="48" text-anchor="middle">Endpoint Picker</text>
+          <text class="d-cap"   x="215" y="66" text-anchor="middle">SCORES EVERY POD</text>
 
-          <!-- drops to each node -->
-          <path class="d-line" d="M138 99 L138 140"></path>
-          <path class="d-line" d="M350 99 L350 140"></path>
-          <path class="d-line" d="M562 99 L562 140"></path>
+          <!-- ext_proc, both directions -->
+          <path class="d-line" d="M215 144 L215 84" marker-end="url(#ah)" marker-start="url(#ah-s)"></path>
+          <text class="d-mono" x="228" y="106">ext_proc</text>
+          <text class="d-mono-muted" x="228" y="122">95 µs p95</text>
 
-          <!-- node 1 -->
-          <rect class="d-box" x="42" y="140" width="192" height="106" rx="3"></rect>
-          <text class="d-label" x="58" y="164">k3s-server</text>
-          <text class="d-mono"  x="58" y="188">eth1 · 192.168.56.11</text>
-          <text class="d-cap"   x="58" y="203">NODE-TO-NODE</text>
-          <text class="d-mono-muted" x="58" y="224">eth0 · 10.0.2.15</text>
-          <text class="d-cap"   x="58" y="239">NAT — EGRESS ONLY</text>
+          <!-- gateway -->
+          <rect class="d-box" x="140" y="146" width="150" height="76" rx="3"></rect>
+          <text class="d-label" x="215" y="176" text-anchor="middle">agentgateway</text>
+          <text class="d-cap"   x="215" y="196" text-anchor="middle">GATEWAY API · :80</text>
 
-          <!-- node 2 -->
-          <rect class="d-box" x="254" y="140" width="192" height="106" rx="3"></rect>
-          <text class="d-label" x="270" y="164">k3s-agent-1</text>
-          <text class="d-mono"  x="270" y="188">eth1 · 192.168.56.12</text>
-          <text class="d-cap"   x="270" y="203">NODE-TO-NODE</text>
-          <text class="d-mono-muted" x="270" y="224">eth0 · 10.0.2.15</text>
-          <text class="d-cap"   x="270" y="239">NAT — EGRESS ONLY</text>
+          <!-- to the pool -->
+          <path class="d-line" d="M290 176 L416 176" marker-end="url(#ah)"></path>
+          <text class="d-mono" x="353" y="167" text-anchor="middle">/v1/chat/completions</text>
 
-          <!-- node 3 -->
-          <rect class="d-box" x="466" y="140" width="192" height="106" rx="3"></rect>
-          <text class="d-label" x="482" y="164">k3s-agent-2</text>
-          <text class="d-mono"  x="482" y="188">eth1 · 192.168.56.13</text>
-          <text class="d-cap"   x="482" y="203">NODE-TO-NODE</text>
-          <text class="d-mono-muted" x="482" y="224">eth0 · 10.0.2.15</text>
-          <text class="d-cap"   x="482" y="239">NAT — EGRESS ONLY</text>
+          <!-- inference pool -->
+          <rect class="d-pool" x="420" y="108" width="344" height="152" rx="4"></rect>
+          <text class="d-cap" x="434" y="128">INFERENCEPOOL · SELECTOR app=sim</text>
 
-          <!-- NAT egress arrows -->
-          <path class="d-line-muted" d="M138 246 L138 282"></path>
-          <path class="d-line-muted" d="M350 246 L350 282"></path>
-          <path class="d-line-muted" d="M562 246 L562 282"></path>
-          <rect class="d-box" x="255" y="282" width="190" height="34" rx="3"></rect>
-          <text class="d-mono-muted" x="350" y="303" text-anchor="middle">internet (per-VM NAT)</text>
+          <rect class="d-box" x="440" y="144" width="140" height="52" rx="3"></rect>
+          <text class="d-label" x="510" y="168" text-anchor="middle">prefill × 3</text>
+          <text class="d-cap"   x="510" y="186" text-anchor="middle">AGENT-1</text>
 
-          <!-- warning -->
-          <text class="d-cap" x="40" y="344" style="fill:var(--blocked);">THE TRAP</text>
-          <text class="d-mono-muted" x="40" y="362">10.0.2.15 is identical on all three VMs — k3s must be pinned to eth1 with --node-ip and --flannel-iface</text>
+          <rect class="d-box" x="604" y="144" width="140" height="52" rx="3"></rect>
+          <text class="d-label" x="674" y="168" text-anchor="middle">decode × 3</text>
+          <text class="d-cap"   x="674" y="186" text-anchor="middle">AGENT-2 · PD-SIDECAR</text>
+
+          <!-- sidecar fetches prefill -->
+          <path class="d-line" d="M674 196 L674 224 L510 224 L510 200" marker-end="url(#ah)"></path>
+          <text class="d-mono" x="592" y="243" text-anchor="middle">sidecar fetches prefill · KV returns</text>
+
+          <!-- round robin control arm -->
+          <path class="d-line-muted" d="M290 200 L330 200 L330 314 L416 314" marker-end="url(#ah-m)"></path>
+          <text class="d-mono-muted" x="338" y="306">/rr</text>
+          <rect class="d-box" x="420" y="292" width="200" height="44" rx="3"></rect>
+          <text class="d-label" x="520" y="312" text-anchor="middle">Service</text>
+          <text class="d-cap"   x="520" y="328" text-anchor="middle">ROUND-ROBIN · NO PICKER</text>
+          <path class="d-line-muted" d="M520 292 L520 264" marker-end="url(#ah-m)"></path>
+          <text class="d-mono-muted" x="530" y="280">same pods</text>
+
+          <!-- ollama -->
+          <path class="d-line-muted" d="M290 212 L310 212 L310 382 L416 382" marker-end="url(#ah-m)"></path>
+          <text class="d-mono-muted" x="318" y="374">/ollama</text>
+          <rect class="d-box" x="420" y="360" width="200" height="44" rx="3"></rect>
+          <text class="d-label" x="520" y="380" text-anchor="middle">ollama</text>
+          <text class="d-cap"   x="520" y="396" text-anchor="middle">QWEN2.5:0.5B · REAL WEIGHTS</text>
         </svg>
       </div>
       <figcaption>
-        Every Vagrant VM carries two adapters. k3s auto-detects its node IP from the default
-        route, which points at the NAT adapter — so without explicit flags all three nodes
-        register as <code>10.0.2.15</code>, the cluster forms, and pod networking silently breaks.
+        The picker does not forward anything. It answers the gateway with the pods to use, and
+        on a split it names the prefill pod in an <code>x-prefiller-host-port</code> header —
+        which only works because a proxy sidecar in front of each decode server acts on it.
+        The <code>/rr</code> path reaches the <em>same pods</em> with no picker at all, which
+        is what makes the A/B comparison fair.
       </figcaption>
     </figure>
   </section>
 
   <section>
-    <h2>Nine phases</h2>
+    <h2>The experiment</h2>
     <p class="sect-note">
-      Ordered by dependency, not preference — each phase needs the one above it to be working.
+      240 requests per arm, six users, a ~250-token shared system prompt plus a ~200-token
+      distinct persona each. Caches cleared between runs, same six pods serving both.
     </p>
 
-    <div class="phases">
-
-      <div class="phase">
-        <div class="ph-num">01</div>
-        <div>
-          <div class="ph-head">
-            <h3 class="ph-title">Toolchain</h3>
-          </div>
-          <p class="ph-body">
-            Vagrant and VirtualBox installed and verified compatible, project under git.
-          </p>
-          <div class="ph-detail">
-            <span class="k">Verified</span>
-            Vagrant <code>2.4.9</code> · VirtualBox <code>7.2.18</code> · Git <code>2.55.0</code>.
-            2.4.9 is the first Vagrant release supporting VirtualBox 7.2.x.
-          </div>
+    <div class="bars">
+      <div class="bar-row">
+        <div class="bar-label"><b>Prefix-aware</b>gateway → picker → pool</div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:82.6%"><span>82.6%</span></div>
+          <div class="ceiling" style="left:86.4%"></div>
         </div>
       </div>
-
-      <div class="phase">
-        <div class="ph-num">02</div>
-        <div>
-          <div class="ph-head">
-            <h3 class="ph-title">Three Rocky Linux nodes</h3>
-          </div>
-          <p class="ph-body">
-            One Vagrantfile builds all three: static host-only IPs, swap off, firewalld off,
-            SELinux left enforcing, clocks synced with chrony. All three came up clean and
-            reachable on the first successful run.
-          </p>
-          <div class="ph-detail">
-            <span class="k">Built</span>
-            <code>Rocky Linux 9.8 (Blue Onyx)</code> on all three nodes · swap <code>0B</code> ·
-            SELinux <code>Enforcing</code> · firewalld <code>inactive</code>.
-          </div>
-          <div class="ph-detail">
-            <span class="k">Gotcha already hit</span>
-            The registry lists box <code>6.0.0</code> as active but its artifact returns 404.
-            Pinned to <code>5.0.0</code>, which range-GETs clean. Verify artifacts exist —
-            don't trust the metadata.
-          </div>
-          <div class="ph-detail">
-            <span class="k">Cost four hours</span>
-            Every boot after the first appeared to hang. The cause was one setting:
-            <code>ioapic=off</code>. VirtualBox requires the I/O APIC to run an SMP guest
-            and, without it, silently hands over a <strong>single</strong> CPU while
-            reporting four — no warning, no log line. On one vCPU under a nested
-            hypervisor, boots outran Vagrant's timeout, which is indistinguishable from a
-            hang. Enabling it took boot from <em>exceeding 600s</em> to <strong>72.8s</strong>.
-            Written up in <a href="https://github.com/igfurlan/k3s-llmd-lab/blob/main/postmortem-vagrant.md">postmortem-vagrant.md</a>.
-          </div>
-          <div class="ph-detail">
-            <span class="k">Also configured</span>
-            <code>--paravirtprovider kvm</code> for <code>kvm-clock</code> (a generic Linux
-            guest otherwise reads raw TSC, which drifts badly under a nested hypervisor) ·
-            <code>boot_timeout 1800</code>, because boots here are legitimately slow ·
-            a 30 GB second disk mounted at <code>/var/lib/rancher</code>, since the box's
-            8.9 GB root cannot hold the container images this stack needs.
-          </div>
+      <div class="bar-row">
+        <div class="bar-label"><b>Round-robin</b>gateway → Service</div>
+        <div class="bar-track">
+          <div class="bar-fill control" style="width:78.4%"><span>78.4%</span></div>
+          <div class="ceiling" style="left:86.4%"></div>
         </div>
+        <div class="ceiling-note">— 86.4% CEILING · ONLY 5 WHOLE 64-TOKEN BLOCKS OF A 370-TOKEN PROMPT CAN EVER CACHE</div>
+      </div>
+    </div>
+
+    <p style="margin-top:26px;">
+      The ceiling is the honest denominator. A 370-token prompt holds five complete blocks;
+      the trailing 50 tokens are recomputed by everyone, every time. Against that,
+      prefix-aware routing recovers about a quarter of the recomputation round-robin leaves
+      on the table — 17.4% of tokens against 21.6%.
+    </p>
+
+    <div class="verdict">
+      <span class="label">What this lab can and cannot prove</span>
+      <p>
+        It can show <strong>where the scheduler sends requests, how often caches hit, and what
+        scheduling costs</strong>. It cannot say what a cache hit is worth in wall-clock
+        seconds: the model servers are simulators, so the latency figures are properties of
+        their configuration. On a GPU, recomputing 64 prompt tokens costs far more than 8 ms
+        of routing — which is the regime that makes this trade pay, and the one this hardware
+        cannot create.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Four failures that looked like success</h2>
+    <p class="sect-note">
+      Every one of these reported healthy. The pattern is worth more than the individual
+      fixes: find a number that only moves if the work actually happened, and look at it.
+    </p>
+
+    <div class="traps">
+
+      <div class="trap">
+        <h3>A guest with one CPU, reporting four</h3>
+        <span class="looked">LOOKED LIKE: a boot hang · WAS: ioapic=off</span>
+        <p>
+          VirtualBox needs the I/O APIC to run an SMP guest and, without it, silently hands
+          over a single CPU while the configuration still says four. On one vCPU under a
+          nested hypervisor, boots outran Vagrant's timeout — indistinguishable from a hang.
+          The provisioning banner printed <code>CPUS: 1</code> next to a Vagrantfile saying 4,
+          and it was read past three times. Enabling it took boot from over 600 s to 72.8 s.
+        </p>
       </div>
 
-      <div class="phase">
-        <div class="ph-num">03</div>
-        <div>
-          <div class="ph-head">
-            <h3 class="ph-title">k3s cluster</h3>
-          </div>
-          <p class="ph-body">
-            One server, two agents, default Flannel CNI, installed by the Vagrantfile itself —
-            so <code>vagrant destroy -f &amp;&amp; vagrant up</code> rebuilds the entire cluster
-            from nothing. OVN-Kubernetes was considered and rejected; see decisions below.
-          </p>
-          <div class="ph-detail">
-            <span class="k">Server flags</span>
-            <code>--node-ip=192.168.56.11</code> · <code>--flannel-iface=eth1</code> ·
-            <code>--tls-san=192.168.56.11</code> · <code>--disable=traefik</code> ·
-            <code>--write-kubeconfig-mode=0644</code>. Version pinned to
-            <code>v1.36.4+k3s1</code>.
-          </div>
-          <div class="ph-detail">
-            <span class="k">Why the first two flags are mandatory</span>
-            k3s picks its node IP from the default route, which points at the NAT adapter —
-            <code>10.0.2.15</code> on all three machines. Without them every node registers
-            under the same address, the cluster forms anyway, and pod networking then fails
-            in ways that look like anything except a networking problem.
-          </div>
-          <div class="ph-detail">
-            <span class="k">Join token</span>
-            Generated once with <code>SecureRandom.hex(32)</code>, written to
-            <code>.k3s-token</code> at mode <code>0600</code>, and read back on every later
-            run. The file is gitignored: a join token is a credential, and this repository
-            is public. Hardcoding one in the Vagrantfile would have been simpler and wrong.
-          </div>
-        </div>
+      <div class="trap">
+        <h3>Disaggregation enabled, and never happening</h3>
+        <span class="looked">LOOKED LIKE: working P/D · WAS: a missing sidecar</span>
+        <p>
+          Every plugin loaded, the picker logged both scheduling profiles, and no request was
+          ever split. The picker names the prefill pod in a header and expects a proxy in
+          front of the decode server to act on it; there was no such proxy. The only
+          contradicting evidence was a Prometheus counter that <em>did not exist</em> on the
+          prefill pod — a counter that has never incremented is not exported at all, so
+          "absent" meant zero requests, not zero hits.
+        </p>
       </div>
 
-      <div class="phase">
-        <div class="ph-num">04</div>
-        <div>
-          <div class="ph-head">
-            <h3 class="ph-title">Gateway API Inference Extension</h3>
-          </div>
-          <p class="ph-body">
-            Originally "install vLLM on all nodes." That was two mistakes: vLLM can't run here,
-            and llm-d deploys vLLM as pods rather than as a node-level install. The real
-            prerequisite is Gateway API plus the Inference Extension CRDs — the vocabulary
-            that lets a gateway reason about LLM traffic instead of treating it as generic HTTP.
-          </p>
-          <div class="ph-detail">
-            <span class="k">Versions</span>
-            Gateway API <code>v1.4.0+</code> · Gateway API Inference Extension
-            <code>v1.6.2</code> (<code>v1-manifests.yaml</code> from the release) ·
-            Kubernetes <code>1.28+</code> required, cluster runs <code>1.36</code>.
-          </div>
-          <div class="ph-detail">
-            <span class="k">Gateway provider: agentgateway</span>
-            Three options exist. <code>kgateway</code> is deprecated and being removed.
-            <code>istio</code> is the documented default but heavy for 6 GB nodes.
-            <code>agentgateway</code> is where the project is heading, so the lab starts
-            there rather than learning a path that is on its way out.
-          </div>
-        </div>
+      <div class="trap">
+        <h3>Metrics endpoint answering 200 with nothing</h3>
+        <span class="looked">LOOKED LIKE: a component exporting no metrics · WAS: auth</span>
+        <p>
+          The picker guards <code>/metrics</code> behind token authentication, and an
+          unauthenticated scrape gets an empty 200 rather than a 401. The token we then
+          supplied was rejected too — because the picker could not <em>check</em> it: it
+          validates tokens through <code>TokenReview</code>, and the chart enables metrics auth
+          without granting itself that right. Binding <code>system:auth-delegator</code> fixed
+          the checker, not the credential.
+        </p>
       </div>
 
-      <div class="phase">
-        <div class="ph-num">05</div>
-        <div>
-          <div class="ph-head">
-            <h3 class="ph-title">llm-d on the cluster</h3>          </div>
-          <p class="ph-body">
-            Helm-installed from the <code>llm-d-infra</code> chart, with model-server pods
-            backed by the simulator instead of real vLLM. The gateway, the endpoint picker
-            and the routing layer are all genuine — only the tensor math is substituted.
-          </p>
-          <div class="ph-detail">
-            <span class="k">Components</span>
-            Chart <code>llm-d-infra</code> from
-            <code>llm-d-incubation.github.io/llm-d-infra</code> · model servers
-            <code>ghcr.io/llm-d/llm-d-inference-sim:v0.9.0</code>.
-          </div>
-          <div class="ph-detail">
-            <span class="k">One prerequisite we escape</span>
-            The official quickstart needs a HuggingFace token to pull model weights. The
-            simulator downloads nothing, so no token and no secret to manage.
-          </div>
-          <div class="ph-detail">
-            <span class="k">Dead ends worth recording</span>
-            <code>llm-d-modelservice</code> is deprecated — retained only for helmfile guides
-            before v0.7. The chart that matters is
-            <code>oci://ghcr.io/llm-d/charts/llm-d-router-gateway</code> at
-            <code>v0.10.0</code>, with <code>provider.name=none</code> because agentgateway
-            handles the InferencePool natively. Four wrong registry paths preceded it.
-          </div>
-          <div class="ph-detail">
-            <span class="k">The check that prevents version pain</span>
-            llm-d v0.9.0 pins Gateway API Inference Extension <code>v1.5.0</code> while this
-            cluster runs <code>v1.6.2</code>. Rather than guess,
-            <code>helm template … | grep apiVersion</code> showed the chart emits
-            <code>inference.networking.k8s.io/v1</code> — exactly what the cluster serves. The
-            v1 API is stable, so the pin was harmless. The same check beforehand would have
-            caught the agentgateway mismatch that cost an hour.
-          </div>
-        </div>
-      </div>
-
-      <div class="phase">
-        <div class="ph-num">06</div>
-        <div>
-          <div class="ph-head">
-            <h3 class="ph-title">Tune llm-d</h3>          </div>
-          <p class="ph-body">
-            KV-cache-aware routing, prefill/decode disaggregation, replica scaling. The
-            simulator's configurable latency model makes routing decisions observable in a
-            way a real GPU under load would not.
-          </p>
-          <div class="ph-detail">
-            <span class="k">Prefill and decode, split across the two agents</span>
-            The two phases of inference have opposite performance profiles.
-            <strong>Prefill</strong> processes the whole prompt in one parallel pass and is
-            compute-bound; <strong>decode</strong> emits tokens one at a time and is
-            memory-bandwidth-bound. Sharing a pod means sizing for neither. Splitting them
-            lets each scale and be placed independently — on real hardware, prefill on
-            high-compute accelerators and decode on high-bandwidth ones.
-          </div>
-          <div class="ph-detail">
-            <span class="k">How the lab does it</span>
-            <code>k3s-agent-1</code> is labelled <code>llm-d.ai/role=prefill</code> and
-            <code>k3s-agent-2</code> <code>llm-d.ai/role=decode</code>; <code>nodeSelector</code>
-            pins each deployment. <code>kubectl get pods -o wide</code> then makes the
-            architecture visible. In production the KV cache must physically move between
-            the two, which llm-d does over NIXL — here that transfer is modelled, not real.
-            The configuration surface and the routing are genuine; the speedup is not, and
-            the write-up says so.
-          </div>
-          <div class="ph-detail">
-            <span class="k">Settled by reading the cluster, not the docs</span>
-            llm-d's GitHub guide describes two InferencePools for P/D; the llm-d.ai docs
-            describe one pool with two labelled Deployments. The running EPP config decides
-            it: <strong>one pool, two Deployments, and P/D is an EPP configuration concern</strong>.
-            The shipped config carries a single <code>default</code> scheduling profile and no
-            <code>disagg-profile-handler</code>, so the role labels are currently inert.
-            Adding them is what <code>router.epp.pluginsConfigFile</code> exists for.
-            Full detail in
-            <a href="https://github.com/igfurlan/k3s-llmd-lab/blob/main/epp-scheduling.md">epp-scheduling.md</a>.
-          </div>
-        </div>
-      </div>
-
-      <div class="phase">
-        <div class="ph-num">07</div>
-        <div>
-          <div class="ph-head">
-            <h3 class="ph-title">ollama, real inference</h3>          </div>
-          <p class="ph-body">
-            A small model — 1B class, quantised — actually generating tokens on CPU. Slow by
-            design, and the honest counterweight to the simulated path.
-          </p>
-          <div class="ph-detail">
-            <span class="k">Depends on</span>
-            The AVX flags reported by phase 2. AVX2 present means usable; AVX-only means slow;
-            neither means painful.
-          </div>
-        </div>
-      </div>
-
-      <div class="phase">
-        <div class="ph-num">08</div>
-        <div>
-          <div class="ph-head">
-            <h3 class="ph-title">A real workload</h3>          </div>
-          <p class="ph-body">
-            Drive both endpoints with something that isn't a curl one-liner — concurrent
-            traffic with realistic prompt-length distribution, so the routing layer has
-            decisions to make.
-          </p>
-        </div>
-      </div>
-
-      <div class="phase">
-        <div class="ph-num">09</div>
-        <div>
-          <div class="ph-head">
-            <h3 class="ph-title">Observability and findings</h3>          </div>
-          <p class="ph-body">
-            Prometheus and Grafana against the vLLM-compatible metrics the simulator emits:
-            time-to-first-token, inter-token latency, queue depth, cache hit rate. This phase
-            is where the portfolio write-up gets its evidence.
-          </p>
-        </div>
+      <div class="trap">
+        <h3>A benchmark measuring its own setup</h3>
+        <span class="looked">LOOKED LIKE: identical results · WAS: three absent preconditions</span>
+        <p>
+          Both arms returned the same hit ratio to sixteen decimal places, because the query
+          spanned both runs and no scrape had happened yet — a 240-request run finishes in
+          about a second against a 15-second scrape interval. Reading the counters straight
+          off the model servers fixed the measurement; scaling replicas, shrinking the cache
+          and lengthening the prompts fixed the experiment.
+        </p>
       </div>
 
     </div>
+  </section>
+
+  <section>
+    <h2>The cluster, and the network it needed</h2>
+    <p class="sect-note">
+      Three nodes from one Vagrantfile — and two network adapters per node, because a node's
+      IP address is its identity and a DHCP lease is not a stable identity.
+    </p>
+
+    <div class="tbl-scroll">
+      <table>
+        <thead>
+          <tr><th>Node</th><th>Runs</th><th>Cluster IP</th><th>vCPU</th><th>RAM</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>k3s-server</td><td>control plane · tokenizer · Prometheus, Grafana</td><td class="mono">192.168.58.11</td><td class="mono">4</td><td class="mono">6144 MB</td></tr>
+          <tr><td>k3s-agent-1</td><td>prefill × 3</td><td class="mono">192.168.58.12</td><td class="mono">4</td><td class="mono">6144 MB</td></tr>
+          <tr><td>k3s-agent-2</td><td>decode × 3 · ollama</td><td class="mono">192.168.58.13</td><td class="mono">4</td><td class="mono">6144 MB</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <figure>
+      <div class="diagram-box">
+        <svg viewBox="0 0 700 316" xmlns="http://www.w3.org/2000/svg" role="img"
+             aria-label="Each node has two adapters: eth1 on an internal switch carrying static 192.168.58.x addresses used as node identity, and eth0 on the Hyper-V Default Switch for DHCP and internet, whose subnet is re-randomised on every host reboot.">
+          <rect class="d-host" x="250" y="10" width="200" height="44" rx="3"></rect>
+          <text class="d-label" x="350" y="30" text-anchor="middle">Windows host</text>
+          <text class="d-mono"  x="350" y="46" text-anchor="middle">192.168.58.1</text>
+          <path class="d-line" d="M350 54 L350 92"></path>
+
+          <rect class="d-switch" x="40" y="92" width="620" height="3" rx="1.5"></rect>
+          <text class="d-cap" x="40" y="84">INTERNAL SWITCH k3s-lab — 192.168.58.0/24 — NO DHCP, STATIC ONLY</text>
+
+          <path class="d-line" d="M138 95 L138 136"></path>
+          <path class="d-line" d="M350 95 L350 136"></path>
+          <path class="d-line" d="M562 95 L562 136"></path>
+
+          <rect class="d-box" x="42" y="136" width="192" height="100" rx="3"></rect>
+          <text class="d-label" x="58" y="160">k3s-server</text>
+          <text class="d-mono"  x="58" y="182">eth1 · 192.168.58.11</text>
+          <text class="d-cap"   x="58" y="196">NODE IDENTITY</text>
+          <text class="d-mono-muted" x="58" y="216">eth0 · dhcp</text>
+          <text class="d-cap"   x="58" y="229">SSH + INTERNET</text>
+
+          <rect class="d-box" x="254" y="136" width="192" height="100" rx="3"></rect>
+          <text class="d-label" x="270" y="160">k3s-agent-1</text>
+          <text class="d-mono"  x="270" y="182">eth1 · 192.168.58.12</text>
+          <text class="d-cap"   x="270" y="196">NODE IDENTITY</text>
+          <text class="d-mono-muted" x="270" y="216">eth0 · dhcp</text>
+          <text class="d-cap"   x="270" y="229">SSH + INTERNET</text>
+
+          <rect class="d-box" x="466" y="136" width="192" height="100" rx="3"></rect>
+          <text class="d-label" x="482" y="160">k3s-agent-2</text>
+          <text class="d-mono"  x="482" y="182">eth1 · 192.168.58.13</text>
+          <text class="d-cap"   x="482" y="196">NODE IDENTITY</text>
+          <text class="d-mono-muted" x="482" y="216">eth0 · dhcp</text>
+          <text class="d-cap"   x="482" y="229">SSH + INTERNET</text>
+
+          <path class="d-line-muted" d="M138 236 L138 276"></path>
+          <path class="d-line-muted" d="M350 236 L350 276"></path>
+          <path class="d-line-muted" d="M562 236 L562 276"></path>
+          <rect class="d-box-2" x="40" y="276" width="620" height="3" rx="1.5"></rect>
+          <text class="d-cap" x="40" y="296" style="fill:var(--blocked);">HYPER-V DEFAULT SWITCH — SUBNET RE-RANDOMISED ON EVERY HOST REBOOT</text>
+        </svg>
+      </div>
+      <figcaption>
+        Vagrant's Hyper-V provider manages one adapter, so the second is attached by a
+        host-side script from an <code>after :up</code> trigger — and because these boxes are
+        generation 1 and cannot hot-add a NIC, the first run shuts each VM down, attaches, and
+        starts it again. Pin k3s to the DHCP adapter instead and the cluster works until the
+        next host reboot, then fails as a certificate error, a join failure and broken pod
+        networking at once — none of which says "your IP changed".
+      </figcaption>
+    </figure>
   </section>
 
   <section>
@@ -731,145 +624,89 @@
       <div class="dec">
         <div class="dec-q">Hypervisor</div>
         <div class="dec-a">
-          <span class="chose">VirtualBox</span> over Hyper-V. Hyper-V would avoid compatibility
-          mode, but familiarity beat a performance margin that doesn't matter for a study lab.
-          Windows keeps a hypervisor resident regardless — every attempt to disable it failed,
-          with Memory Integrity the untested suspect.
+          <span class="chose">Hyper-V</span>, after starting on VirtualBox for familiarity and
+          measuring the cost. Windows keeps a hypervisor resident for Memory Integrity, so
+          VirtualBox never gets AMD-V and falls back to NEM. Memory Integrity stays on:
+          Hyper-V <em>is</em> the hypervisor it requires, so running VMs there removes the
+          indirection rather than fighting it.
         </div>
       </div>
 
       <div class="dec">
-        <div class="dec-q">Guest OS</div>
+        <div class="dec-q">Model servers</div>
         <div class="dec-a">
-          <span class="chose">Rocky Linux 9</span> — binary-compatible with RHEL, so the
-          <code>dnf</code>/SELinux/firewalld habits transfer. Rocky 10 needs
-          <code>x86-64-v3</code>, which a masked guest CPU may not advertise. Version 9 has no
-          such requirement.
-        </div>
-      </div>
-
-      <div class="dec">
-        <div class="dec-q">Provisioning</div>
-        <div class="dec-a">
-          <span class="chose">Vagrant + a pinned box</span>, not the downloaded ISO. Boxes are
-          pre-installed images; an ISO would need Packer to become one. Terraform's Hyper-V
-          provider and Multipass were both rejected — the first needs WinRM for a local host,
-          the second can't attach the disks a storage layer would want.
-        </div>
-      </div>
-
-      <div class="dec">
-        <div class="dec-q">CNI</div>
-        <div class="dec-a">
-          <span class="chose">Flannel (k3s default)</span>. OVN-Kubernetes was tempting for
-          OpenShift practice, but there's no documented k3s + OVN-K path, nodes stay
-          <code>NotReady</code> until the CNI works, and — decisively — OpenShift never has you
-          install OVN-K by hand. The Cluster Network Operator does it. Hand-rolling the install
-          teaches the one part that doesn't transfer.
-        </div>
-      </div>
-
-      <div class="dec">
-        <div class="dec-q">Storage</div>
-        <div class="dec-a">
-          <span class="chose">local-path, on a dedicated disk</span>. Rook/Ceph became its own
-          project: three OSDs on one SSD gives no real redundancy, and Ceph's default 4 GB
-          <code>osd_memory_target</code> would OOM these nodes. But the box's 8.9 GB root
-          cannot hold this stack's images, so each node gets a 30 GB disk mounted at
-          <code>/var/lib/rancher</code> — containerd, the kubelet and local-path PVs all
-          live there. Dynamically allocated, so the unused space costs nothing.
+          <span class="chose">llm-d-inference-sim</span>, which emits vLLM's own metric names —
+          so the gateway, scheduler, cache accounting and every dashboard panel behave exactly
+          as they would against real vLLM. One assumption was retired along the way: the lab
+          was designed around "the guests have no AVX-512", measured under VirtualBox. Under
+          Hyper-V the full set comes through, so that constraint belonged to the hypervisor.
+          Only 6 GB nodes keep real vLLM out now.
         </div>
       </div>
 
       <div class="dec">
         <div class="dec-q">Gateway provider</div>
         <div class="dec-a">
-          <span class="chose">agentgateway</span>, not Istio or kgateway. kgateway is
-          deprecated and scheduled for removal, so learning it would be learning a dead path.
-          Istio is the documented default but carries a footprint these 6 GB nodes would
-          feel. agentgateway is where llm-d is heading — newer and less documented, which is
-          a real cost, but the right thing to be fluent in.
+          <span class="chose">agentgateway v1.5.0</span>, not Istio or kgateway — kgateway is
+          deprecated, Istio is heavy for 6 GB nodes. Not v1.1.0 either: it watches a
+          <code>v1alpha2.TCPRoute</code> that Gateway API 1.6.2 no longer serves, so its
+          informer blocks forever and the GatewayClass never registers. A controller stuck at
+          0/1 with no useful log.
+        </div>
+      </div>
+
+      <div class="dec">
+        <div class="dec-q">Metrics authentication</div>
+        <div class="dec-a">
+          <span class="chose">Left on, and a token issued</span>. Turning
+          <code>--metrics-endpoint-auth</code> off would have made the scrape work in one line.
+          Disabling authentication to make monitoring convenient is not a habit a lab should
+          teach, so Prometheus got a ServiceAccount, a ClusterRole granting GET on the
+          non-resource URL <code>/metrics</code>, and a bearer token.
+        </div>
+      </div>
+
+      <div class="dec">
+        <div class="dec-q">Dashboards</div>
+        <div class="dec-a">
+          <span class="chose">JSON in git, no Grafana persistence</span>. Dashboards provision
+          from ConfigMaps, so a Grafana restart costs nothing and the UI is never the only
+          copy. The panels are documented by the decision each one drives, not by the metric
+          each one plots.
         </div>
       </div>
 
       <div class="dec">
         <div class="dec-q">Secrets</div>
         <div class="dec-a">
-          <span class="chose">Generated, never committed</span>. The k3s join token is
-          produced at build time into a gitignored file rather than written into the
-          Vagrantfile. Same for the kubeconfig, which carries admin certificates. A public
-          repository that rebuilds a whole cluster from one command must not also hand over
-          the keys to it.
+          <span class="chose">Generated, never committed</span>. The k3s join token is produced
+          at build time into a gitignored file; Grafana's admin password comes from a Secret
+          created out of band. A public repository that rebuilds a whole cluster from one
+          command must not also hand over the keys to it.
         </div>
       </div>
 
       <div class="dec">
-        <div class="dec-q">Working with the cluster</div>
+        <div class="dec-q">Scope</div>
         <div class="dec-a">
-          <span class="chose">kubectl from inside the cluster</span>. No local kubectl on the
-          Windows host — <code>vagrant ssh k3s-server</code> and work there. One less
-          kubeconfig to keep in sync, and no risk of pointing the wrong context at a
-          different cluster.
-        </div>
-      </div>
-
-      <div class="dec">
-        <div class="dec-q">Where the disks live</div>
-        <div class="dec-a">
-          <span class="chose">C: — the NVMe</span>, despite the 4 TB HDD having more room. The
-          gap is roughly 1000× in random IOPS, and three VMs on one spindle means head thrash.
-          Linked clones and dynamic allocation put the real footprint near 40–80 GB against
-          1566 GB free — the space argument never applied.
+          <span class="chose">Rook/Ceph, OVN-Kubernetes and Ansible all out</span>. Three OSDs
+          on one SSD is not redundancy; there is no documented k3s + OVN-K path and OpenShift
+          installs it via an operator anyway; and the Vagrantfile already provisions, so a
+          second configuration tool would be ceremony.
         </div>
       </div>
 
     </div>
   </section>
 
-  <section>
-    <h2>Verification gates</h2>
-    <p class="sect-note">
-      Facts to establish from the running VMs before phase 3. Each one can invalidate an
-      assumption above.
-    </p>
-    <ul class="gates">
-      <li>
-        <span class="mark ok"></span>
-        <span><b>What AVX flags survive into the guest.</b> Determines whether ollama is usable
-        and settles the vLLM question with evidence rather than reasoning.
-        <span class="result">avx avx2 — no AVX-512. Prediction confirmed: vLLM ruled out, ollama viable.</span></span>
-      </li>
-      <li>
-        <span class="mark ok"></span>
-        <span><b>Real interface names.</b> Rocky normally uses predictable names, but Vagrant
-        boxes often disable that — the answer changes the k3s flags.
-        <span class="result">eth0 = NAT 10.0.2.15 · eth1 = host-only. Box disables predictable naming.</span></span>
-      </li>
-      <li>
-        <span class="mark ok"></span>
-        <span><b>Node-to-node reachability</b> across the host-only network.
-        <span class="result">0% loss both directions. ~10 ms avg — high for a virtual switch, the compatibility-mode tax.</span></span>
-      </li>
-      <li>
-        <span class="mark ok"></span>
-        <span><b>Swap reads 0B</b> on every node, and the <code>/etc/fstab</code> entry stayed
-        commented.
-        <span class="result">0B on all three. SELinux Enforcing, firewalld inactive, as intended.</span></span>
-      </li>
-      <li>
-        <span class="mark"></span>
-        <span><b>Kernel matches userspace.</b> Release reports 9.8 but the running kernel is
-        still <code>el9_5</code> — a newer one is installed and waiting on a boot.
-        <span class="result warn">Pending: one vagrant reload before k3s goes on.</span></span>
-      </li>
-    </ul>
-  </section>
-
   <footer>
     <p>
-      Living document — phase states and gate results update as the build proceeds.
       Written alongside the work, so the reasoning survives into the write-up rather than
-      being reconstructed afterwards.
+      being reconstructed afterwards. Every figure on this page came off the running cluster.
+    </p>
+    <p>
+      Code, manifests, dashboards and the full write-ups:
+      <a href="https://github.com/igfurlan/k3s-llmd-lab">github.com/igfurlan/k3s-llmd-lab</a>
     </p>
   </footer>
 
