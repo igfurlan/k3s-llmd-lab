@@ -1,0 +1,291 @@
+{
+  "uid": "llm-d-routing",
+  "title": "llm-d — Inference Routing",
+  "description": "How the llm-d endpoint picker routes inference traffic: prefill/decode split decisions, prefix cache effectiveness per role, scheduling cost, and the difference between a simulated backend and a real one.",
+  "tags": ["llm-d", "inference", "k3s-llmd-lab"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "datasource",
+        "label": "Data source",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "What this shows",
+      "gridPos": { "h": 4, "x": 0, "y": 0, "w": 24 },
+      "options": {
+        "mode": "markdown",
+        "content": "Traffic enters through a **Gateway API** gateway, which calls the **endpoint picker (EPP)** over ext_proc before choosing a backend. The EPP runs two scheduling profiles — `prefill` (weighted toward cache locality) and `decode` (weighted toward free capacity) — and a decider chooses whether a request is worth splitting across both.\n\nThe model servers are **`llm-d-inference-sim`**, which emits vLLM-compatible metrics, so every `vllm:*` panel here would look identical against real vLLM. **ollama** serves a real model on the same gateway under `/ollama`; it publishes no Prometheus metrics, so it appears only in the bottom row, through the container's CPU and memory."
+      }
+    },
+
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Routed requests",
+      "description": "Requests the endpoint picker scheduled, per second.",
+      "gridPos": { "h": 4, "x": 0, "y": 4, "w": 6 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "decimals": 2, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] } },
+        "overrides": []
+      },
+      "options": { "graphMode": "area", "textMode": "auto", "colorMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [{ "refId": "A", "expr": "sum(rate(llm_d_epp_request_total[5m]))", "datasource": { "type": "prometheus", "uid": "${datasource}" } }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Prefix cache hit ratio",
+      "description": "Cached prompt tokens as a share of queried prompt tokens, across all model servers. This is the number prefix-aware routing exists to raise.",
+      "gridPos": { "h": 4, "x": 6, "y": 4, "w": 6 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "decimals": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": { "graphMode": "area", "textMode": "auto", "colorMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [{ "refId": "A", "expr": "sum(rate(vllm:prefix_cache_hits_total[5m])) / sum(rate(vllm:prefix_cache_queries_total[5m]))", "datasource": { "type": "prometheus", "uid": "${datasource}" } }]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "P/D decisions",
+      "description": "Disaggregation decisions per second. A request splits only when the chosen decode pod does not already hold the prompt.",
+      "gridPos": { "h": 4, "x": 12, "y": 4, "w": 6 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "decimals": 2, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] } },
+        "overrides": []
+      },
+      "options": { "graphMode": "area", "textMode": "auto", "colorMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [{ "refId": "A", "expr": "sum(rate(llm_d_epp_disagg_decision_total[5m]))", "datasource": { "type": "prometheus", "uid": "${datasource}" } }]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Ready endpoints",
+      "description": "Model server pods the picker considers schedulable.",
+      "gridPos": { "h": 4, "x": 18, "y": 4, "w": 6 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "decimals": 0, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] } },
+        "overrides": []
+      },
+      "options": { "graphMode": "none", "textMode": "auto", "colorMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [{ "refId": "A", "expr": "max(llm_d_epp_ready_endpoints)", "datasource": { "type": "prometheus", "uid": "${datasource}" } }]
+    },
+
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Prefill / decode split decisions",
+      "description": "Every disaggregation decision the EPP made, by outcome. Repeated identical prompts stop splitting once decode holds the whole prefix — there is no prefill work left to move, and a split would pay a KV transfer for nothing.",
+      "gridPos": { "h": 8, "x": 0, "y": 8, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "auto", "pointSize": 8, "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "refId": "A", "expr": "sum by (decision) (rate(llm_d_epp_disagg_decision_total[5m]))", "legendFormat": "{{decision}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Scheduling cost",
+      "description": "How long the picker takes to choose an endpoint. This sits in the request path — every request waits on it — so it is the price of smart routing.",
+      "gridPos": { "h": 8, "x": 12, "y": 8, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "auto", "pointSize": 8, "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_d_epp_scheduler_e2e_duration_seconds_bucket[5m])))", "legendFormat": "p95", "datasource": { "type": "prometheus", "uid": "${datasource}" } },
+        { "refId": "B", "expr": "histogram_quantile(0.50, sum by (le) (rate(llm_d_epp_scheduler_e2e_duration_seconds_bucket[5m])))", "legendFormat": "p50", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Prefix cache hit ratio by role",
+      "description": "Cached share of queried prompt tokens, split by prefill and decode. Caching counts in whole 64-token blocks, so a prompt's trailing partial block can never be a hit — a 109-token prompt tops out at 64.",
+      "gridPos": { "h": 8, "x": 0, "y": 16, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "auto", "pointSize": 8, "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "refId": "A", "expr": "sum by (llm_d_ai_role) (rate(vllm:prefix_cache_hits_total[5m])) / sum by (llm_d_ai_role) (rate(vllm:prefix_cache_queries_total[5m]))", "legendFormat": "{{llm_d_ai_role}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }]
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "KV cache utilisation by role",
+      "description": "How full each model server's KV cache is. The decode profile scores on this directly — a pod near capacity is a poor place to send a long generation.",
+      "gridPos": { "h": 8, "x": 12, "y": 16, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "auto", "pointSize": 8, "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "refId": "A", "expr": "max by (llm_d_ai_role, pod) (vllm:kv_cache_usage_perc)", "legendFormat": "{{llm_d_ai_role}} — {{pod}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }]
+    },
+
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Token throughput by role",
+      "description": "Prompt tokens are read during prefill; generation tokens are produced during decode. When disaggregation is working, these two lines live on different pods.",
+      "gridPos": { "h": 8, "x": 0, "y": 24, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "auto", "pointSize": 8, "spanNulls": false, "axisLabel": "tokens/sec" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (llm_d_ai_role) (rate(vllm:prompt_tokens_total[5m]))", "legendFormat": "prompt — {{llm_d_ai_role}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } },
+        { "refId": "B", "expr": "sum by (llm_d_ai_role) (rate(vllm:generation_tokens_total[5m]))", "legendFormat": "generation — {{llm_d_ai_role}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Queue depth by role",
+      "description": "Running and waiting requests per model server — the signal the queue-scorer reads. Decode weights it 3:1 against cache locality, prefill the other way round.",
+      "gridPos": { "h": 8, "x": 12, "y": 24, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "auto", "pointSize": 8, "spanNulls": false, "axisLabel": "requests" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (llm_d_ai_role) (vllm:num_requests_running)", "legendFormat": "running — {{llm_d_ai_role}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } },
+        { "refId": "B", "expr": "sum by (llm_d_ai_role) (vllm:num_requests_waiting)", "legendFormat": "waiting — {{llm_d_ai_role}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "Time to first token (p95)",
+      "description": "Measured at the router, so it includes scheduling, any remote prefill, and the KV transfer — the number a caller actually experiences.",
+      "gridPos": { "h": 8, "x": 0, "y": 32, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "auto", "pointSize": 8, "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_d_epp_request_ttft_seconds_bucket[5m])))", "legendFormat": "TTFT p95", "datasource": { "type": "prometheus", "uid": "${datasource}" } },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_d_epp_request_duration_seconds_bucket[5m])))", "legendFormat": "request duration p95", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Scheduler plugin cost (p95)",
+      "description": "Time spent inside each scheduling plugin. This is where a weighted scorer's price shows up — and where an expensive one would be caught.",
+      "gridPos": { "h": 8, "x": 12, "y": 32, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "auto", "pointSize": 8, "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, plugin_name) (rate(llm_d_epp_plugin_duration_seconds_bucket[5m])))", "legendFormat": "{{plugin_name}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }]
+    },
+
+    {
+      "id": 50,
+      "type": "timeseries",
+      "title": "CPU — simulated vs real inference",
+      "description": "ollama publishes no Prometheus metrics, so it appears here through cAdvisor instead. Its CPU burn beside the simulators' flat line is the clearest picture of what is modelled and what is real in this lab.",
+      "gridPos": { "h": 8, "x": 0, "y": 40, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "auto", "pointSize": 8, "spanNulls": false, "axisLabel": "cores" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "refId": "A", "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"llm-d\", container!=\"\"}[5m]))", "legendFormat": "{{pod}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }]
+    },
+    {
+      "id": 51,
+      "type": "timeseries",
+      "title": "Memory — simulated vs real inference",
+      "description": "Working set per pod. The render (tokenizer) service and ollama dominate; the simulators are deliberately cheap, which is what lets three of these nodes hold the whole stack.",
+      "gridPos": { "h": 8, "x": 12, "y": 40, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "auto", "pointSize": 8, "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "refId": "A", "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"llm-d\", container!=\"\"})", "legendFormat": "{{pod}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }]
+    }
+  ]
+}
