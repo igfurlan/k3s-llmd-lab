@@ -108,7 +108,20 @@
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 4px; padding: 14px 12px; overflow-x: auto;
   }
-  svg.flow { display: block; width: 100%; min-width: 880px; height: auto; }
+  /* Scales to whatever width it is given. The floor only applies on phones,
+     where 780 units squeezed into 360px would render 11px labels at 5px. */
+  svg.flow { display: block; width: 100%; height: auto; }
+  @media (max-width: 560px) {
+    svg.flow { min-width: 560px; }
+  }
+
+  /* Embedded in another page (?embed=1): drop the page furniture so the host
+     can size an iframe to the diagram rather than to a document.
+     Keyed on the query string, not on being framed — the published standalone
+     version is framed too, and should keep its header. */
+  body.embed header,
+  body.embed footer { display: none; }
+  body.embed { padding-block: 10px 18px; }
 
   .hl { transition: opacity .22s ease; }
   .dim { opacity: 0.17; }
@@ -418,6 +431,11 @@
 
 <script>
 (function () {
+  // Host pages ask for the trimmed layout with ?embed=1.
+  try {
+    if (location.search.indexOf("embed") >= 0) document.body.classList.add("embed");
+  } catch (e) { /* no query string available; show the full page */ }
+
   var ALL = ["n-client","e-client-gw","n-gateway","e-gw-pool","n-pool","n-sidecar","n-decode",
              "n-prefill","e-sidecar-decode","e-sidecar-prefill","e-kv","e-response","n-epp",
              "n-tokenizer","n-decider","n-prefill-profile","n-decode-profile","e-gw-epp",
