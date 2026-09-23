@@ -198,7 +198,11 @@ rather than assuming the metrics are absent.
 
 ---
 
-## Prefill/decode disaggregation — enabled and verified (2026-09-23)
+## Prefill/decode disaggregation — enabled in the scheduler (2026-09-23)
+
+> **Scope:** this section is about the *scheduler*. The EPP now decides to split every
+> request and names both pods. The split does **not** yet reach the data path — see
+> [Configured is not operating](#configured-is-not-operating) at the end.
 
 On the VirtualBox cluster every plugin name below loaded and P/D still stayed off, because
 nothing was driving the plugins:
@@ -267,3 +271,54 @@ this pool at a real Anthropic backend is a configuration change rather than a re
 
 Same cluster, same plugins, opposite priorities — which is the argument for splitting the
 phases stated as six integers.
+
+---
+
+## Configured is not operating
+
+The EPP's startup log said P/D was on. The cluster disagreed, and the metrics said so
+plainly. After three identical requests:
+
+| Pod | `prefix_cache_hits_total` | `prefix_cache_queries_total` |
+|---|---|---|
+| `sim-decode` | 128 | 306 |
+| `sim-prefill` | **metric absent** | **metric absent** |
+
+A counter that has never incremented is not exported at all, so "absent" here means zero
+requests — not zero hits. Every request went to decode, which did its own prefill locally.
+The scheduler was splitting; nothing downstream acted on the split.
+
+### Why
+
+The EPP does not send the request to the prefill pod. It names that pod in a header and
+expects something else to act on it. From
+[llm-d-routing-sidecar](https://github.com/llm-d/llm-d-routing-sidecar):
+
+> This project provides a reverse proxy redirecting incoming requests to the prefill worker
+> specified in the `x-prefiller-host-port` HTTP request header.
+
+That proxy — now `pd-sidecar`, in the `llm-d-router` repository, published as
+`ghcr.io/llm-d/llm-d-router-disagg-sidecar` — runs **in front of the decode model server**.
+It reads the header, drives the prefill worker, arranges the KV transfer, then hands the
+request to the local server for decode. Without it, the header reaches a model server that
+has no idea what it means, and is ignored.
+
+So the deployment is missing a component, not misconfigured. Both observations were true at
+once: the scheduler *was* disaggregating, and the cluster *was not*.
+
+### The lesson, which is the same one as the boot hang
+
+Every layer reported success. The Helm release was deployed, the EPP logged both profiles,
+the pods were Ready, and requests returned valid completions with correct token counts. The
+only thing that contradicted the story was a counter that did not exist on one pod.
+
+Confirming a control plane is not confirming a data path. A feature that is configured,
+loaded and logged can still be doing nothing, and the way to tell the difference is always
+the same: find a number that only moves if the work actually happened, and look at it.
+
+### Next increment
+
+Add the `pd-sidecar` container to `sim-decode`, fronting the simulator: the sidecar takes
+port 8000 (the InferencePool's target), the simulator moves behind it. One consequence to
+remember — the EPP's `metrics-data-source` then scrapes the sidecar's port rather than the
+model server's, which is what the plugin's optional `port` parameter exists for.
