@@ -18,16 +18,24 @@ repeating.
 | **A** | `/v1/chat/completions` | Gateway → EPP → InferencePool. Prefix-aware, with prefill/decode disaggregation |
 | **B** | `/rr/v1/chat/completions` | Gateway → plain `Service` → kube-proxy round-robin |
 
-**The same two model servers serve both arms.** Separate replicas would compare
-two sets of caches on two sets of hardware, and any result could be waved away as
-placement luck. Same pods, caches cleared between runs, one variable.
+**The same six model servers serve both arms** (3 prefill + 3 decode). Separate
+replicas would compare two sets of caches on two sets of hardware, and any result
+could be waved away as placement luck. Same pods, caches cleared between runs,
+one variable.
+
+Replica count is not a detail here. With one pod per role the picker logs
+`num-of-candidates: 1` — there is no decision to make, and both arms are the same
+thing pointed at the same pod. That is what run 1 measured.
 
 The workload is the other half of the design: a ~250-token system prompt shared
-by every request, a ~40-token per-user persona, and a short varying question. Six
-users, ten turns each. That is the shape of real LLM traffic — and the shape
-where cache locality is worth something. Unique random prompts would show
-nothing (nothing to cache); one identical prompt would show everything and prove
-nothing.
+by every request, a ~200-token DISTINCT per-user persona, and a short varying
+question. Six users, forty turns each. Both lengths matter: the shared part must
+be big enough to cache, and the per-user part must exceed the 64-token block size
+or it cannot be cached at all — which is the mistake run 1 made.
+
+And the caches are deliberately too small (`--kv-cache-size 16` blocks, 1024
+tokens). Locality only pays when memory is scarce; with a cache that holds
+everything, scattering costs nothing and round-robin ties.
 
 ## Protocol
 
@@ -42,13 +50,13 @@ chmod +x ~/bench/ab-bench.sh
 kubectl -n llm-d rollout restart deploy/sim-prefill deploy/sim-decode
 kubectl -n llm-d rollout status deploy/sim-prefill; kubectl -n llm-d rollout status deploy/sim-decode
 sleep 15
-~/bench/ab-bench.sh /v1/chat/completions 60 4 6
+~/bench/ab-bench.sh /v1/chat/completions 240 4 6
 
 # --- Arm B: round robin ---
 kubectl -n llm-d rollout restart deploy/sim-prefill deploy/sim-decode
 kubectl -n llm-d rollout status deploy/sim-prefill; kubectl -n llm-d rollout status deploy/sim-decode
 sleep 15
-~/bench/ab-bench.sh /rr/v1/chat/completions 60 4 6
+~/bench/ab-bench.sh /rr/v1/chat/completions 240 4 6
 ```
 
 The script prints the Grafana window for each run. Compare the two windows on
@@ -72,11 +80,7 @@ curl -sG 'http://localhost:9090/api/v1/query' --data-urlencode \
 
 Run it right after each arm, with the window covering only that arm.
 
-## Expected, and why a null result is still a result
-
-With six users and a ~290-token shared prefix, arm A should hold a materially
-higher hit ratio: round-robin scatters each user's turns across both pods, so
-roughly half of them land somewhere cold.
+## Why a null result is still a result
 
 Latency is the less certain half. These are **simulated** model servers, and the
 simulator models prefill time rather than performing it — so a cache hit saves
