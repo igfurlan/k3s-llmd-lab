@@ -1,0 +1,21 @@
+# The front door. One HTTP listener; agentgateway implements it.
+#
+# k3s's ServiceLB gives this an external IP on the node addresses, which is why
+# the smoke test can curl http://192.168.58.11 directly with no port-forward.
+#
+# traefik is disabled cluster-wide (see the Vagrantfile) so nothing else is
+# competing for port 80.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: inference-gateway
+  namespace: llm-d
+spec:
+  gatewayClassName: agentgateway
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same

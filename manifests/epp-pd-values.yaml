@@ -1,0 +1,100 @@
+# Helm values for the llm-d-router-gateway chart: the InferencePool and its
+# endpoint picker (EPP).
+#
+#   helm upgrade -i sim-pool oci://ghcr.io/llm-d/charts/llm-d-router-gateway \
+#     --version v0.10.0 --namespace llm-d -f ~/manifests/epp-pd-values.yaml
+#
+# WHAT THE EPP IS
+#   An ext_proc service the gateway calls before it picks a backend. Ordinary
+#   Kubernetes load balancing is round-robin and blind; the EPP scores every
+#   candidate pod on things that matter for LLM serving — whose KV cache already
+#   holds this prefix, how deep each queue is — and names the pod to use.
+#
+# THE P/D PART IS UNTESTED
+#   Every plugin name below was accepted by the EPP on the previous cluster, but
+#   P/D disaggregation stayed OFF, because no decider was configured:
+#
+#     disagg/disagg_profile_handler.go:172
+#       "No deciders.prefill configured, P/D disaggregation disabled"
+#
+#   `deciders.prefill` below is the fix, and confirming it is the open question
+#   of phase 6. Success looks like the EPP's "EPP config after phase two" log
+#   line naming `ProfileHandler: disagg-profile-handler` with both profiles, and
+#   NOT repeating the message above.
+
+router:
+  modelServers:
+    matchLabels:
+      app: sim
+
+  epp:
+    # The EPP is the only component here that must not be starved: it sits in
+    # the request path, and a slow scheduler looks exactly like a slow model.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+    pluginsConfigFile: "pd-plugins.yaml"
+
+    flags:
+      # prefix-based-pd-decider is experimental and refuses to load without this.
+      allow-experimental-plugins: true
+
+    pluginsCustomConfig:
+      pd-plugins.yaml: |
+        apiVersion: llm-d.ai/v1alpha1
+        kind: EndpointPickerConfig
+        plugins:
+        - type: prefix-based-pd-decider
+          parameters:
+            # 0 disables the split (the default). 1 means "always split", which
+            # is what a lab wants: it makes the behaviour observable on every
+            # request instead of only on long prompts.
+            nonCachedTokens: 1
+        - type: disagg-profile-handler
+          parameters:
+            deciders:
+              prefill: prefix-based-pd-decider
+        - type: prefill-filter
+        - type: decode-filter
+        - type: queue-scorer
+        - type: kv-cache-utilization-scorer
+        - type: prefix-cache-scorer
+        - type: metrics-data-source
+          parameters:
+            scheme: "http"
+            path: "/metrics"
+            insecureSkipVerify: true
+        - type: core-metrics-extractor
+        schedulingProfiles:
+        # Prefill: cache locality dominates. A pod that already holds this
+        # prefix skips the expensive pass entirely, which is worth more than an
+        # evenly balanced queue — hence 3 against 1.
+        - name: prefill
+          plugins:
+          - pluginRef: prefill-filter
+          - pluginRef: prefix-cache-scorer
+            weight: 3
+          - pluginRef: queue-scorer
+            weight: 1
+        # Decode: the work is long-lived and bandwidth-bound, so queue depth and
+        # cache headroom matter more than locality.
+        - name: decode
+          plugins:
+          - pluginRef: decode-filter
+          - pluginRef: queue-scorer
+            weight: 3
+          - pluginRef: kv-cache-utilization-scorer
+            weight: 2
+
+# agentgateway handles the InferencePool natively, so the chart must not deploy
+# a proxy of its own.
+provider:
+  name: none
+
+httpRoute:
+  create: true
+  inferenceGatewayName: inference-gateway
