@@ -1,272 +1,231 @@
 # k3s-llmd-lab
 
-A three-node [k3s](https://k3s.io) cluster on Hyper-V, built to run the
-[llm-d](https://llm-d.ai) distributed inference stack — provisioned from a single
-Vagrantfile, on a Windows host.
+A three-node [k3s](https://k3s.io) cluster on a Windows desktop, running the
+[llm-d](https://llm-d.ai) distributed inference stack end to end: Gateway API with the
+Inference Extension, an endpoint picker that routes on KV-cache state, prefill/decode
+disaggregation, a real model alongside simulated ones, and Prometheus and Grafana watching
+all of it.
 
-The GPU in the host machine is unreachable from the VMs, so **the inference is simulated
-and the orchestration is real**. That trade is deliberate, and explained below.
+Everything here was measured on the cluster rather than taken from documentation, and the
+measurements that contradicted expectations are written down too.
 
-> The lab began on VirtualBox and moved to Hyper-V on 2026-09-22, because VirtualBox never
-> gets hardware virtualization on this host and its guests were being descheduled for
-> seconds at a time. [hyperv-migration-plan.md](hyperv-migration-plan.md) has the
-> measurement that decided it; [archive/Vagrantfile.virtualbox](archive/Vagrantfile.virtualbox)
-> is the configuration it replaced, kept for the history.
+---
 
-## Why simulated inference
+## What this lab found
 
-1. **No GPU passthrough.** Discrete Device Assignment is a Windows *Server* feature, so the
-   host's RTX 5070 Ti is invisible to every guest here.
-2. **6 GB nodes.** A real model's weights and KV cache do not fit alongside a control plane,
-   a gateway and a tokenizer service.
+**Prefix-aware routing beat round-robin by 4.2 points on identical traffic — 82.6% against
+78.4% cache hit ratio — and cost 2.5× the latency to do it.**
+Against the theoretical ceiling (86.4%, set by 64-token block granularity) that is capturing
+96% of the achievable versus 91%: round-robin recomputes about a quarter more prompt tokens.
+The latency cost is real and is a property of *this* hardware, where a simulated prefill is
+nearly free. [The experiment →](bench/)
 
-**One of the original three reasons turned out to be false, and it is worth recording.**
-The lab was designed around "vLLM's CPU backend needs AVX-512, and the guests do not have
-it" — measured under VirtualBox, where they reported `avx avx2` and nothing more. Measured
-again under Hyper-V, the same host passes the whole set through:
+**The first version of that experiment found nothing, and the reason is the more useful
+half.** Both arms scored 74%, which turned out to be exactly `192/259` — the shared system
+prompt and nothing else. Per-user context was 40 tokens, under the 64-token block size, so it
+could never be cached wherever it was routed; the cache held 65,536 tokens so nothing ever
+evicted; and with one pod per role the picker logged `num-of-candidates: 1`, meaning there
+was no routing decision to make at all. **Cache-aware routing needs distinguishing prefixes
+that span whole blocks, memory scarce enough to evict, and more than one candidate.** Absent
+those, round-robin ties and wins on latency.
+
+**Prefill/decode disaggregation was "enabled" for a day while doing nothing.** Every plugin
+loaded, the EPP logged both scheduling profiles, and no traffic was ever split — because the
+component that acts on the routing decision, a proxy sidecar in front of the decode server,
+was missing. The only evidence was a counter that did not exist on one pod.
+[How it was found →](docs/epp-scheduling.md#configured-is-not-operating)
+
+**Smart routing costs 95 µs against a 23.8 ms time-to-first-token** — about 0.4% of the
+request. That ratio, not the absolute number, is what justifies putting a scheduler in the
+request path.
+
+**Two days were lost to a hypervisor, not to Kubernetes.** VirtualBox never gets AMD-V on
+this host because Windows holds the hypervisor for Memory Integrity, so guests ran on NEM and
+were descheduled for seconds at a time. A 50 ms sleep, 25 samples: multi-second stalls on
+VirtualBox against a flat `51 51 51 … 50 51` on Hyper-V; `hrtimer` warnings 14/6/6 against 0;
+load average 13–19 at 73% idle CPU against 0.03. [The postmortem →](docs/postmortem-vagrant.md)
+
+---
+
+## Architecture
 
 ```
-avx avx2 avx512f avx512bw avx512dq avx512vl avx512_bf16 avx512_vnni avx512_vbmi ...
+  curl ──▶ Gateway (agentgateway, :80)
+             │
+             ├─ /v1/chat/completions ──▶ ext_proc ──▶ Endpoint Picker (EPP)
+             │                                          │  scores every pod in the
+             │                                          │  InferencePool, then answers
+             │                                          │  with one — or two, on a split
+             │                                          ▼
+             │                              ┌────────────────────────┐
+             │                              │ prefill × 3   (agent-1)│ compute-bound
+             │                              │ decode  × 3   (agent-2)│ bandwidth-bound
+             │                              └────────────────────────┘
+             │                                 decode's sidecar fetches the prefill
+             │                                 and the KV cache moves between them
+             │
+             ├─ /rr/v1/chat/completions ─▶ plain Service (round-robin)   ← the control arm
+             │
+             └─ /ollama/v1/...          ─▶ ollama, qwen2.5:0.5b          ← real inference
 ```
 
-So that constraint was the **hypervisor's, not the hardware's**. A real vLLM CPU backend is
-now possible here in principle, and only memory keeps it out. The provisioner banner prints
-these flags on every run, which is how the assumption got retested instead of inherited.
+| Component | Version | Role |
+|---|---|---|
+| k3s | `v1.36.4+k3s1` | 1 server + 2 agents, Flannel, traefik disabled |
+| Gateway API | `v1.6.2` | The routing standard |
+| [Inference Extension](https://github.com/kubernetes-sigs/gateway-api-inference-extension) | `v1.6.2` | `InferencePool` — CRDs that understand LLM traffic |
+| [agentgateway](https://agentgateway.dev) | `v1.5.0` | Gateway implementation. **Not v1.1.0** — it watches a `v1alpha2.TCPRoute` that Gateway API 1.6.2 no longer serves, so its informer blocks forever and the GatewayClass never registers |
+| llm-d router | `v0.10.0` | Endpoint picker + the P/D routing sidecar |
+| [llm-d-inference-sim](https://github.com/llm-d/llm-d-inference-sim) | `v0.11.2` | GPU-free vLLM stand-in, emitting vLLM's metric names |
+| vLLM (render) | `v0.21.0` | Tokenizer only — no weights, no GPU |
+| ollama | `0.34.3` | Real inference, `qwen2.5:0.5b` |
+| kube-prometheus-stack | latest | Prometheus + Grafana, trimmed for 6 GB nodes |
 
-The resolution is [`llm-d-inference-sim`](https://github.com/llm-d/llm-d-inference-sim) — the
-llm-d project's own GPU-free vLLM mock. It is OpenAI-API compliant, models prefill and decode
-latency, degrades under concurrency, and emits vLLM-compatible Prometheus metrics. The gateway,
-the scheduler, the routing layer and the entire observability story exercise identically. Only
-the tensor math is fake.
+---
 
-Real inference comes from [ollama](https://ollama.com), which is built for CPU and gets its
-AVX2 fast path.
+## What is real and what is simulated
 
-## Cluster
+The model servers are simulators. **They emit vLLM's own metric names**, so the gateway, the
+scheduler, the cache accounting and every dashboard panel behave exactly as they would
+against real vLLM — swap the image and nothing else changes. Only the tensor math is absent.
+
+ollama runs a real model on the same gateway, at `/ollama`, which is what the CPU and memory
+panels contrast: a real model burning cores beside simulators that do not.
+
+**What this lab can prove:** that the scheduler controls where requests go, how often caches
+hit, and what that costs in scheduling latency.
+**What it cannot:** what a cache hit is worth in wall-clock seconds. That needs real weights
+on real accelerators, and any latency number here is a property of the simulator's
+configuration.
+
+One assumption worth retiring: the lab was designed around "vLLM's CPU backend needs AVX-512
+and the guests don't have it", measured under VirtualBox. Under Hyper-V the same host passes
+the full set through — `avx512f avx512bw avx512dq avx512vl avx512_bf16 avx512_vnni` — so that
+constraint belonged to the hypervisor, not the hardware. Only 6 GB nodes keep real vLLM out
+now.
+
+---
+
+## Running it
+
+Requires [Vagrant](https://developer.hashicorp.com/vagrant) 2.4.9+ and the Hyper-V role.
+**Every command needs an elevated PowerShell** — Hyper-V's management API refuses
+non-administrators, and Vagrant reports that as something else entirely.
+
+```powershell
+# once per host: creates the Internal switch the cluster network lives on
+powershell -ExecutionPolicy Bypass -File scripts\hyperv-create-switch.ps1
+
+vagrant up --no-provision   # create and boot; each node gains its cluster NIC
+vagrant provision           # cluster addresses, then k3s — server first, agents after
+```
+
+Two commands on the first run, one (`vagrant up`) afterwards — the reason is in
+[Networking](#networking-and-why-it-takes-a-script). Then the llm-d stack, in order, from
+[`manifests/`](manifests/).
+
+Grafana lands on `http://192.168.58.11:30300`.
+
+### Cluster
 
 | Node | Role | Cluster IP | vCPU | RAM |
 |---|---|---|---|---|
-| `k3s-server` | control plane + workload | `192.168.58.11` | 4 | 6144 MB |
-| `k3s-agent-1` | workload | `192.168.58.12` | 4 | 6144 MB |
-| `k3s-agent-2` | workload | `192.168.58.13` | 4 | 6144 MB |
+| `k3s-server` | control plane, tokenizer, monitoring | `192.168.58.11` | 4 | 6144 MB |
+| `k3s-agent-1` | prefill × 3 | `192.168.58.12` | 4 | 6144 MB |
+| `k3s-agent-2` | decode × 3, ollama | `192.168.58.13` | 4 | 6144 MB |
 
-Guests are Rocky Linux 9, from box `generic/rocky9` pinned at `4.3.12` — the Rocky box that
-publishes a `hyperv` provider. Swap off, firewalld disabled, SELinux left **enforcing** —
-k3s installs `k3s-selinux` and `container-selinux` itself, which is the same posture a real
-RHEL deployment would have.
+Rocky Linux 9 from `generic/rocky9` (the only Rocky box publishing a `hyperv` provider).
+Swap off, firewalld disabled, **SELinux enforcing** — k3s installs `k3s-selinux` itself,
+which is the posture a real RHEL deployment would have. Memory is fixed rather than dynamic:
+the box's own Vagrantfile sets `maxmemory = 2048`, and any `maxmemory` enables Hyper-V
+Dynamic Memory, which would cap a 6 GB node at 2 GB.
 
-Memory is **fixed, not dynamic**. This box's own Vagrantfile sets `maxmemory = 2048`, and any
-`maxmemory` switches Hyper-V Dynamic Memory on; inherited, it would cap a 6 GB node at 2 GB.
+k3s settings live in `/etc/rancher/k3s/config.yaml`, not in `INSTALL_K3S_EXEC` — the
+Vagrantfile skips installation when k3s is already running, so anything baked into the
+installer could never change again. The join token is generated with `SecureRandom.hex(32)`
+into a gitignored file, never hardcoded: it is a credential and this repository is public.
 
-No second disk: the box's VHDX is 128 GB, dynamically allocated, and its kickstart gives root
-essentially all of it. (The VirtualBox box had an 8.9 GB root, which is why the archived
-Vagrantfile carries a 30 GB data disk and an XFS mount at `/var/lib/rancher`.)
-
-### k3s
-
-Installed by the Vagrantfile, pinned to `v1.36.4+k3s1`:
-
-```
---node-ip=192.168.58.11 --flannel-iface=eth1 --tls-san=192.168.58.11
---disable=traefik --disable=metrics-server --write-kubeconfig-mode=0644
-```
-
-These live in `/etc/rancher/k3s/config.yaml`, not in the installer's `INSTALL_K3S_EXEC`.
-The reason is practical: the Vagrantfile skips the install step when k3s is already running,
-so anything baked into the installer can never change again on an existing cluster. k3s
-re-reads `config.yaml` on every start, so editing the Vagrantfile and re-provisioning
-actually does something.
-
-`--disable=traefik` because llm-d brings its own Envoy-based gateway, and two ingress
-controllers competing for ports 80/443 through ServiceLB is a bad time. ServiceLB stays
-enabled so that gateway can still get an external IP.
-
-The cluster join token is generated at build time with `SecureRandom.hex(32)`, written to a
-gitignored `.k3s-token`, and reused on every later run. It is deliberately **not** hardcoded
-in the Vagrantfile — a join token is a credential and this repository is public.
-
-```powershell
-# rebuilds the entire cluster from nothing
-vagrant destroy -f; vagrant up --no-provision; vagrant provision
-```
-
-## Quick start
-
-Requires [Vagrant](https://developer.hashicorp.com/vagrant) 2.4.9+ and the Hyper-V role.
-**Every command must run from an elevated PowerShell** — Hyper-V's management API refuses
-non-administrators outright, and Vagrant reports that as something else entirely.
-
-Once per host:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\hyperv-create-switch.ps1
-```
-
-Then, from the repository:
-
-```powershell
-vagrant up --no-provision   # create and boot; each node gains its cluster NIC
-vagrant provision           # cluster addresses, then k3s — server first, agents after
-vagrant ssh k3s-server
-vagrant halt                # power off, keep the VMs
-```
-
-Two commands on the first run, one (`vagrant up`) on every run after. The reason is in the
-next section.
-
-Each node prints a banner on provision with its OS, CPU flags, interfaces, root size, swap
-state and `hrtimer` warning count.
+---
 
 ## Networking, and why it takes a script
 
-Vagrant's Hyper-V provider manages **one** network adapter and has no setting for a second.
-The cluster needs two, for reasons that do not overlap:
+Vagrant's Hyper-V provider manages **one** network adapter. The cluster needs two:
 
 | Adapter | Switch | Role |
 |---|---|---|
-| `eth0` | **Default Switch** | DHCP and internet, and the address Vagrant SSHes to. Windows re-randomises this subnet on every host reboot, so nothing may depend on it |
-| `eth1` | **`k3s-lab`**, an Internal switch | Static `192.168.58.x`. The only address a node is known by |
+| `eth0` | **Default Switch** | DHCP, internet, and the address Vagrant SSHes to. Windows re-randomises this subnet on every host reboot, so nothing may depend on it |
+| `eth1` | **`k3s-lab`**, Internal | Static `192.168.58.x` — the only address k3s is told about |
 
-So `eth1` is attached host-side by
-[`scripts/hyperv-attach-cluster-nic.ps1`](scripts/hyperv-attach-cluster-nic.ps1), from an
-`after :up` trigger. These boxes are generation 1, which cannot hot-add an adapter, so that
-script shuts the VM down, attaches, and starts it again — once, which is why provisioning is
-held back to a second command on the first run.
+A node's IP is its *identity*: kubelet registration, flannel's tunnel endpoints, the server's
+TLS SANs and the agents' join URL all key on it. Pin it to a DHCP lease and the cluster works
+until the next host reboot, then fails as a certificate error, a join failure and broken pod
+networking at once — none of which says "your IP changed".
 
-Three details make it work, each one taken from the provider's source rather than guessed:
+So `eth1` is attached host-side by a trigger script. Three details make it work, each read
+from the provider's source rather than guessed:
 
-- **`bridge:` picks the switch by name**, and is set only until Vagrant's `action_configure`
-  sentinel exists. Left in place it would be re-applied to *every* adapter on each `up`
-  (`Set-VagrantVMSwitch` connects them all), dragging `eth1` onto the Default Switch.
-- **SSH follows adapter 0** (`Get-VMNetworkAdapter | Select-Object -Index 0`), so the DHCP
-  adapter must stay first and the cluster NIC is appended after it.
-- **An Internal switch has no DHCP**, so `eth1` gets its address from a provisioner, with
-  `ipv4.never-default yes` to keep the default route on `eth0`.
+- **`bridge:` selects the switch by name**, and is set only until Vagrant's `action_configure`
+  sentinel exists — left in place it is re-applied to *every* adapter on each `up`, dragging
+  the cluster NIC onto the Default Switch.
+- **SSH follows adapter 0**, so the DHCP adapter must stay first.
+- **An Internal switch has no DHCP**, so the address is assigned by a provisioner with
+  `ipv4.never-default yes`, keeping the default route on `eth0`.
 
-The trap this replaces is the same on any provider: k3s takes its node IP from the default
-route, which points at the adapter Vagrant manages — `10.0.2.15` on every VM under
-VirtualBox, a lease that changes under Hyper-V. Both flags are mandatory:
+These boxes are generation 1 and cannot hot-add a NIC, which is why the first run shuts each
+VM down, attaches, and starts it again — and why provisioning waits for the second command.
 
-```
---node-ip=192.168.58.x --flannel-iface=eth1
-```
+---
 
-The subnet is `192.168.58.0/24` rather than the more usual `.56`, because VirtualBox's
-host-only adapter still holds `192.168.56.1` on this host and two interfaces sharing an
-address is a routing problem that shows up as intermittent unreachability.
+## Repository map
 
-## What goes on top
+| Path | What is in it |
+|---|---|
+| [`Vagrantfile`](Vagrantfile) | The whole cluster: 3 VMs, two networks, k3s, all of it |
+| [`scripts/`](scripts/) | Host-side PowerShell: create the switch, attach the cluster NIC |
+| [`manifests/`](manifests/) | Gateway, simulators, tokenizer, ollama, the round-robin control arm |
+| [`manifests/monitoring/`](manifests/monitoring/) | Prometheus stack values, scrape config, dashboard JSON |
+| [`bench/`](bench/) | The A/B experiment: load generator, protocol, results |
+| [`docs/`](docs/) | The deep dives |
+| [`archive/`](archive/) | The VirtualBox Vagrantfile, kept with a header on why it was abandoned |
 
-| Layer | Choice | Why |
-|---|---|---|
-| Gateway API | v1.4.0+ | The base routing standard |
-| [Inference Extension](https://github.com/kubernetes-sigs/gateway-api-inference-extension) | v1.6.2 | `InferencePool` — CRDs that understand LLM traffic |
-| Gateway provider | **agentgateway** | kgateway is deprecated; Istio is heavy for 6 GB nodes |
-| [llm-d-infra](https://github.com/llm-d-incubation/llm-d-infra) | Helm chart | Deploys the gateway and the endpoint picker |
-| Model servers | `llm-d-inference-sim:v0.9.0` | GPU-free stand-in for vLLM |
+### Deep dives
 
-The **endpoint picker** is the part worth learning. Ordinary Kubernetes load balancing is
-round-robin and blind; llm-d's scheduler routes on things that matter for LLMs — which pod
-has the relevant KV cache warm, how deep each queue is, which LoRA adapters are loaded.
-None of that depends on the workers being real.
+| Document | What it covers |
+|---|---|
+| [reading-the-dashboard.md](docs/reading-the-dashboard.md) | **Each panel mapped to the decision it drives** — which weight to change, when to stop disaggregating, why replicas cannot fix a distribution fault |
+| [epp-scheduling.md](docs/epp-scheduling.md) | The endpoint picker: profiles, weighted scorers, the P/D decider's arithmetic, and how "enabled" was not "operating" |
+| [postmortem-vagrant.md](docs/postmortem-vagrant.md) | Four wrong hypotheses, one `ioapic=off`, and the measurement that ended it |
+| [hyperv-migration-plan.md](docs/hyperv-migration-plan.md) | The migration, researched from provider source before a line was written |
+| [model-backends.md](docs/model-backends.md) | Swapping the simulator for ollama or a hosted model |
+| [bench/README.md](bench/README.md) | The A/B experiment, both runs, including the null result |
 
-Its policy is three weighted scorers, and the weights *are* the design decision:
-
-```yaml
-schedulingProfiles:
-- name: default
-  plugins:
-  - pluginRef: prefix-cache-scorer         # weight 3 — cache locality
-    weight: 3
-  - pluginRef: queue-scorer                # weight 2 — least busy
-    weight: 2
-  - pluginRef: kv-cache-utilization-scorer # weight 2 — cache headroom
-    weight: 2
-```
-
-Prefix-cache affinity outranks load balancing 3:2 — llm-d's thesis that a cache hit is worth
-more than an evenly distributed queue, expressed as three integers.
-[reading-the-dashboard.md](reading-the-dashboard.md) turns those metrics into decisions;
-[epp-scheduling.md](epp-scheduling.md) has the full walkthrough: the wiring, `failureMode`,
-what the payload-agnostic fallback reveals, and how to inspect a distroless EPP.
-
-Using the simulator also removes a prerequisite: the official quickstart needs a HuggingFace
-token to pull model weights, and the simulator downloads nothing.
-
-**The simulator is a swap, not a dead end.** The Gateway, HTTPRoute, InferencePool and
-metrics pipeline are identical whether the backend is simulated, a local ollama model, or
-Claude via Anthropic's API — only one resource changes.
-[model-backends.md](model-backends.md) has working YAML for all three, including how the
-API key is handled for the hosted case.
-
-### Prefill/decode disaggregation
-
-The two agents are split by role, which is llm-d's **P/D disaggregation** pattern:
-
-| Phase | Work | Bottleneck | Node |
-|---|---|---|---|
-| **Prefill** | Processes the whole prompt in one parallel pass, producing the KV cache | Compute-bound | `k3s-agent-1` |
-| **Decode** | Emits output tokens one at a time, reusing that cache | Memory-bandwidth-bound | `k3s-agent-2` |
-
-Two opposite profiles in one pod means sizing for neither. Split, each scales and is placed
-independently — on real hardware, prefill on high-compute accelerators and decode on
-high-bandwidth ones. Node labels plus `nodeSelector` pin the pods, so
-`kubectl get pods -o wide` shows the architecture directly.
-
-In production the KV cache physically moves between the two, which llm-d does over NIXL.
-Here that transfer is **modelled, not real** — the configuration and routing are genuine,
-the speedup is not.
+---
 
 ## Observability
 
-Prometheus and Grafana run in-cluster (`kube-prometheus-stack`, trimmed for 6 GB nodes),
-scraping the model servers through a `PodMonitor` and the endpoint picker through an
-authenticated `ServiceMonitor`. Grafana is at `http://192.168.58.11:30300`.
+Prometheus scrapes the simulators through a `PodMonitor` and the endpoint picker through an
+authenticated `ServiceMonitor`. The EPP's `/metrics` is guarded by `--metrics-endpoint-auth`,
+and an unauthenticated request returns an **empty 200** rather than a 401 — which reads
+exactly like a component that exports nothing. Authentication was kept on and Prometheus
+given a token, rather than the reverse.
 
-The dashboard JSON lives in
-[`manifests/monitoring/dashboards/`](manifests/monitoring/dashboards/) and provisions from a
-ConfigMap, so Grafana deliberately has no persistence — the UI is never the only copy.
+That token was rejected for a while too, for a reason worth knowing: the EPP could not
+*check* it. Controller-runtime validates bearer tokens with a `TokenReview` and a
+`SubjectAccessReview`, and the chart enables metrics auth without granting the EPP those
+rights. Binding `system:auth-delegator` fixes the checker, not the credential.
 
-**[reading-the-dashboard.md](reading-the-dashboard.md) is the part worth reading.** It maps
-each panel to the decision it drives: which scorer weight to raise when one pod saturates
-while a sibling idles, when to stop disaggregating because the KV transfer costs more than
-the prefill it avoids, why adding replicas cannot fix a distribution fault, and how to scale
-prefill and decode independently.
+Dashboard JSON lives in [`manifests/monitoring/dashboards/`](manifests/monitoring/dashboards/)
+and provisions from a ConfigMap, so Grafana deliberately has no persistence — the UI is never
+the only copy.
 
-Two numbers from this cluster that frame the whole architecture:
+---
 
-- Scheduling costs **95 µs** against a **23.8 ms** TTFT — the intelligence is ~0.4% of the
-  request.
-- Prefix cache hit ratio runs **33% on decode against 7% on prefill**, which is the split
-  working: repeated prompts land on decode and hit, while prefill only receives work the
-  decider has established *isn't* cached.
+## Scope
 
-## Notes
+Deliberately out: Rook/Ceph (three OSDs on one SSD is not redundancy), OVN-Kubernetes (no
+documented k3s path, and OpenShift installs it via an operator anyway), and Ansible (the
+Vagrantfile already provisions; a second configuration tool would be ceremony).
 
-- **Work from inside the cluster.** No local `kubectl` on the Windows host; `vagrant ssh
-  k3s-server` and work there. One less kubeconfig to keep in sync.
-- **No distributed storage.** Rook/Ceph was scoped out — three OSDs on one SSD gives no real
-  redundancy, and Ceph's default 4 GB `osd_memory_target` would OOM these nodes.
-- **Flannel, not OVN-Kubernetes.** OVN-K was considered for OpenShift practice and rejected:
-  there is no documented k3s + OVN-K path, and OpenShift never has you install it by hand
-  anyway — the Cluster Network Operator does. Hand-rolling the install teaches the one part
-  that does not transfer.
-- **VM disks belong on an SSD.** Roughly 1000× the random IOPS of a spinning disk, and three
-  VMs on one spindle means head thrash.
-- **The hypervisor choice was measured, not assumed.** Windows keeps a hypervisor resident
-  for Memory Integrity, so VirtualBox never gets AMD-V here and falls back to NEM, where
-  guest vCPUs are descheduled for seconds. Sleep 50 ms, 25 times, and compare:
-
-  ```
-  VirtualBox (NEM)   multi-second stalls   hrtimer warnings 14/6/6   load 13-19 at 73% idle
-  Hyper-V            52 51 52 ... 51 52    hrtimer warnings 0        load 0.03
-  ```
-
-  Memory Integrity stays on — Hyper-V *is* the hypervisor it requires, so this removes the
-  indirection instead of fighting it. [postmortem-vagrant.md](postmortem-vagrant.md) has the
-  full account.
-- **One VirtualBox setting cost four hours.** `ioapic=off` silently caps a guest at a single
-  CPU while still reporting four. [postmortem-vagrant.md](postmortem-vagrant.md) has the
-  full account, including the diagnostics that actually discriminated between "slow" and
-  "hung". It no longer applies to the live Vagrantfile, but the reasoning is the transferable
-  part.
+The interesting thread left unexplored is **precise prefix-cache routing** — the simulators
+already publish `BlockStored` events over ZMQ, and consuming them would replace the router's
+block-rounded estimate with each pod's actual cache contents.

@@ -54,7 +54,7 @@ curl -s http://192.168.58.11/v1/chat/completions -H 'Content-Type: application/j
 The InferencePool and the endpoint picker are **not** manifests — they come from
 the `llm-d-router-gateway` Helm chart, with `epp-pd-values.yaml` supplying the
 scheduling configuration. The install order and version pins are in
-[../hyperv-migration-plan.md](../hyperv-migration-plan.md).
+[hyperv-migration-plan.md](../docs/hyperv-migration-plan.md).
 
 Order matters in one place: the Gateway API Inference Extension CRDs must be
 installed **before** agentgateway. Installed after, agentgateway's informer

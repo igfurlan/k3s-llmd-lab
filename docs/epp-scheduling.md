@@ -212,7 +212,7 @@ disagg/disagg_profile_handler.go:172  "No deciders.prefill configured, P/D disag
 ```
 
 The missing piece was one parameter — `deciders.prefill` on the profile handler, naming a
-decider plugin. The full values file is [manifests/epp-pd-values.yaml](manifests/epp-pd-values.yaml);
+decider plugin. The full values file is [manifests/epp-pd-values.yaml](../manifests/epp-pd-values.yaml);
 the part that matters:
 
 ```yaml
