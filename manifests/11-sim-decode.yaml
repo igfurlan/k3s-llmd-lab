@@ -41,14 +41,66 @@ spec:
       # Set by: kubectl label node k3s-agent-2 llm-d.ai/role=decode
       nodeSelector:
         llm-d.ai/role: decode
+      initContainers:
+        # THE PIECE THAT MAKES P/D REAL.
+        #
+        # The EPP picks both pods and stamps the prefill target into an
+        # `x-prefiller-host-port` header — but nothing in a model server knows
+        # what that header means. This sidecar is what acts on it: a reverse
+        # proxy in front of the decode server that intercepts completion
+        # requests, drives the prefill worker, arranges the KV transfer, and
+        # only then hands the request to the local server to decode.
+        #
+        # Without it the header is inert and decode prefills locally, which is
+        # exactly what the metrics showed: sim-prefill exported no prefix-cache
+        # counters at all, because it had served nothing.
+        #
+        # `restartPolicy: Always` on an initContainer makes this a NATIVE
+        # SIDECAR (k8s 1.29+): it starts before the app container and keeps
+        # running alongside it, rather than running once and exiting.
+        - name: routing-sidecar
+          image: ghcr.io/llm-d/llm-d-router-disagg-sidecar:v0.10.0
+          restartPolicy: Always
+          args:
+            # Takes the InferencePool's target port; the simulator moves to 8200.
+            - "--port=8000"
+            # Default. Names the KV transfer protocol the sidecar speaks to the
+            # model servers. Real NIXL needs RDMA-capable hardware; the
+            # simulator implements the same request contract and models the
+            # transfer as latency, so the orchestration is genuine and only the
+            # bytes are imaginary.
+            - "--kv-connector=nixlv2"
+            # Plain HTTP to the model servers. No TLS inside the pool here.
+            - "--secure-proxy=false"
+            - "--data-parallel-size=1"
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          # The sidecar serves GET /health itself; every other path is proxied
+          # through to the simulator, /metrics included — which is why the EPP's
+          # metrics scrape needs no reconfiguration.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 10
       containers:
         - name: sim
           image: ghcr.io/llm-d/llm-d-inference-sim:v0.11.2
           args:
             - "--model"
             - "Qwen/Qwen2.5-1.5B-Instruct"
+            # 8200, not 8000: the routing sidecar owns the pool's target port
+            # and proxies to the simulator here. This is the sidecar's own
+            # default for the model server, kept rather than invented.
             - "--port"
-            - "8000"
+            - "8200"
             - "--enable-kvcache"
             - "true"
             - "--block-size"
@@ -85,7 +137,7 @@ spec:
                   fieldPath: metadata.namespace
           ports:
             - name: http
-              containerPort: 8000
+              containerPort: 8200
             - name: kv-events
               containerPort: 5556
             - name: kv-replay
@@ -93,9 +145,13 @@ spec:
           # A TCP probe rather than an HTTP one: the simulator's health path is
           # not something to guess at, and a wrong path means a pod that never
           # goes Ready for a reason that looks like a crash.
+          #
+          # 8200. Probing 8000 here would still pass — the sidecar shares this
+          # network namespace and listens there — so it would report the
+          # simulator healthy on the strength of a different process answering.
           readinessProbe:
             tcpSocket:
-              port: 8000
+              port: 8200
             initialDelaySeconds: 3
             periodSeconds: 5
           resources:
