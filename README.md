@@ -177,6 +177,7 @@ schedulingProfiles:
 
 Prefix-cache affinity outranks load balancing 3:2 — llm-d's thesis that a cache hit is worth
 more than an evenly distributed queue, expressed as three integers.
+[reading-the-dashboard.md](reading-the-dashboard.md) turns those metrics into decisions;
 [epp-scheduling.md](epp-scheduling.md) has the full walkthrough: the wiring, `failureMode`,
 what the payload-agnostic fallback reveals, and how to inspect a distroless EPP.
 
