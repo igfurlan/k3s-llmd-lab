@@ -181,6 +181,10 @@ PREREQS = <<~'SHELL'
   # Rocky 9.3, so the first run has a lot to fetch.
   dnf update -y -q
 
+  # Drop the package cache. Worth a few hundred MB per node, and the only cost
+  # is that the next dnf command re-fetches repo metadata.
+  dnf clean all -q
+
   # --- report what this guest can actually do ---------------------------
   echo "=============================================================="
   echo " NODE:   $(hostname)   $(cat /etc/rocky-release)"
@@ -274,6 +278,14 @@ K3S_SERVER = <<~SHELL
     rm -f "$NEW"
   fi
 
+  # mktemp creates 0600 root-only, and `k3s kubectl` reads this file as the
+  # invoking user — so without this every command prints three copies of
+  # "open /etc/rancher/k3s/config.yaml: permission denied" before working
+  # normally. Safe to make readable: this file holds no secret. The join token
+  # lives in /var/lib/rancher/k3s/server/token, which stays 0600.
+  # Set outside the branch above, so an existing 0600 file is corrected too.
+  chmod 0644 /etc/rancher/k3s/config.yaml
+
   if systemctl is-active --quiet k3s; then
     echo "k3s server already running."
     if [ "$CONFIG_CHANGED" = yes ]; then
@@ -332,6 +344,10 @@ k3s_agent = lambda do |ip|
     else
       rm -f "$NEW"
     fi
+
+    # Same as on the server: mktemp leaves it 0600 and `k3s kubectl` warns on
+    # every invocation. No secret in this file.
+    chmod 0644 /etc/rancher/k3s/config.yaml
 
     if systemctl is-active --quiet k3s-agent; then
       echo "k3s agent already running."
