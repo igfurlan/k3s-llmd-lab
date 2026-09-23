@@ -393,11 +393,12 @@
         <p class="r-body" id="r-body"></p>
       </div>
       <div class="nav">
+        <button id="play" aria-label="Pause the walkthrough" title="Pause">❚❚</button>
         <button id="prev" aria-label="Previous step">←</button>
         <button id="next" aria-label="Next step">→</button>
       </div>
     </div>
-    <p class="hint">Arrow keys step through · every figure came off the running cluster</p>
+    <p class="hint" id="hint">Playing automatically · click any step to take over · every figure came off the running cluster</p>
   </div>
 
   <footer>
@@ -506,8 +507,50 @@
   var body = document.getElementById("r-body");
   var prev = document.getElementById("prev");
   var next = document.getElementById("next");
+  var play = document.getElementById("play");
+  var hint = document.getElementById("hint");
 
   function steps() { return mode === "split" ? SPLIT : CACHED; }
+
+  /* ---- autoplay -----------------------------------------------------------
+     The page walks itself, because most people will look at this for a few
+     seconds without touching anything and should still see the mechanism.
+     Any deliberate interaction hands control over and stops the timer -- a
+     walkthrough that keeps moving while you are reading a step is worse than
+     one that never moved. */
+  var DWELL = 5200;              // long enough to read a step's caption
+  var timer = null;
+  var reduced = window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function advance() {
+    // -1 is the overview; cycle overview -> 1..n -> overview.
+    idx = idx >= steps().length - 1 ? -1 : idx + 1;
+    paint();
+  }
+
+  function startPlaying() {
+    if (timer) return;
+    timer = setInterval(function () {
+      if (document.hidden) return;   // don't burn through it in a background tab
+      advance();
+    }, DWELL);
+    play.textContent = "❚❚";
+    play.setAttribute("aria-label", "Pause the walkthrough");
+    play.title = "Pause";
+    hint.textContent =
+      "Playing automatically · click any step to take over · every figure came off the running cluster";
+  }
+
+  function stopPlaying(reason) {
+    if (timer) { clearInterval(timer); timer = null; }
+    play.textContent = "▶";
+    play.setAttribute("aria-label", "Play the walkthrough");
+    play.title = "Play";
+    hint.textContent = reason === "user"
+      ? "You have the controls · arrow keys step through · ▶ resumes the walkthrough"
+      : "Arrow keys step through · ▶ plays the walkthrough";
+  }
 
   function paint() {
     var step = idx < 0 ? OVERVIEW : steps()[idx];
@@ -537,19 +580,20 @@
     var all = document.createElement("button");
     all.className = "chip";
     all.textContent = "ALL";
-    all.onclick = function () { idx = -1; paint(); };
+    all.onclick = function () { stopPlaying("user"); idx = -1; paint(); };
     chips.appendChild(all);
     steps().forEach(function (s, i) {
       var b = document.createElement("button");
       b.className = "chip";
       b.textContent = String(i + 1);
       b.title = s.title;
-      b.onclick = function () { idx = i; paint(); };
+      b.onclick = function () { stopPlaying("user"); idx = i; paint(); };
       chips.appendChild(b);
     });
   }
 
   function setMode(m) {
+    stopPlaying("user");
     mode = m;
     document.getElementById("m-split").setAttribute("aria-pressed", String(m === "split"));
     document.getElementById("m-cached").setAttribute("aria-pressed", String(m === "cached"));
@@ -560,15 +604,30 @@
 
   document.getElementById("m-split").onclick = function () { setMode("split"); };
   document.getElementById("m-cached").onclick = function () { setMode("cached"); };
-  prev.onclick = function () { if (idx >= 0) { idx--; paint(); } };
-  next.onclick = function () { if (idx < steps().length - 1) { idx++; paint(); } };
+  prev.onclick = function () { stopPlaying("user"); if (idx >= 0) { idx--; paint(); } };
+  next.onclick = function () { stopPlaying("user"); if (idx < steps().length - 1) { idx++; paint(); } };
+
+  play.onclick = function () {
+    if (timer) stopPlaying("user");
+    else { startPlaying(); advance(); }
+  };
 
   document.addEventListener("keydown", function (e) {
-    if (e.key === "ArrowRight") { if (idx < steps().length - 1) { idx++; paint(); } }
-    else if (e.key === "ArrowLeft") { if (idx >= 0) { idx--; paint(); } }
+    if (e.key === "ArrowRight") {
+      stopPlaying("user");
+      if (idx < steps().length - 1) { idx++; paint(); }
+    } else if (e.key === "ArrowLeft") {
+      stopPlaying("user");
+      if (idx >= 0) { idx--; paint(); }
+    }
   });
 
   buildChips();
   paint();
+
+  // Start on its own, unless the viewer has asked for less motion — in which
+  // case the page waits to be driven.
+  if (reduced) stopPlaying("reduced");
+  else setTimeout(function () { if (idx === -1) { startPlaying(); advance(); } }, 1800);
 })();
 </script>
