@@ -71,9 +71,27 @@ prometheus:
               storage: 10Gi
 
 grafana:
-  # Lab credentials, stated plainly rather than hidden in a secret nobody can
-  # find. This cluster is reachable only from the host over an Internal switch.
-  adminPassword: admin
+  # Credentials come from a Secret created out of band, NOT from this file —
+  # this repository is public.
+  #
+  #   kubectl -n monitoring create secret generic grafana-admin \
+  #     --from-literal=admin-user=admin \
+  #     --from-literal=admin-password='<your password>' \
+  #     --dry-run=client -o yaml | kubectl apply -f -
+  #
+  # This also fixes a noise problem. The dashboard sidecar calls Grafana's
+  # /api/admin/provisioning/dashboards/reload with the chart's admin
+  # credentials; change the password in the UI and every reload logs
+  #
+  #   Response: 401 Unauthorized {"message":"Invalid username or password"}
+  #
+  # once per dashboard update, forever. Dashboards still load — Grafana polls
+  # the provisioning folder itself — so it is pure noise, and the kind that
+  # trains people to ignore logs. Pointing both at one Secret ends it.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
 
   service:
     # NodePort, not LoadBalancer. k3s's ServiceLB claims host ports on every
