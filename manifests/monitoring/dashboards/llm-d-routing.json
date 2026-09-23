@@ -111,7 +111,7 @@
         "overrides": []
       },
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [{ "refId": "A", "expr": "sum by (decision) (rate(llm_d_epp_disagg_decision_total[5m]))", "legendFormat": "{{decision}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }]
+      "targets": [{ "refId": "A", "expr": "sum by (decision_type) (rate(llm_d_epp_disagg_decision_total[5m]))", "legendFormat": "{{decision_type}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }]
     },
     {
       "id": 11,
