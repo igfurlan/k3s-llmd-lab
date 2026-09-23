@@ -91,7 +91,64 @@ useful than a latency graph that quietly measures a configured constant.
 
 ## Results
 
-### 2026-09-23 — 240 requests, concurrency 4, 6 users
+### Run 2 — tuned, 2026-09-23
+
+Three replicas per role, `kv-cache-size 16` blocks, ~200-token personas,
+`prefix-cache-scorer` added to the decode profile. 240 requests, concurrency 4,
+6 users.
+
+| | Arm A (prefix-aware + P/D) | Arm B (round-robin) |
+|---|---|---|
+| **Hit ratio** | **82.6%** | **78.4%** |
+| Prompt tokens queried | 177,832 | 88,916 |
+| Cache hits | 146,816 | 69,696 |
+| Latency p50 | 13.4 ms | **5.4 ms** |
+| Latency p90 | 16.2 ms | 6.8 ms |
+
+**+4.2 points, where run 1 showed 0.5.** The mechanism is visible once the
+conditions exist for it to matter.
+
+#### Against the ceiling, which is the honest denominator
+
+Prompts average 370 tokens (88,916 ÷ 240 in arm B, one touch per request). At
+64-token blocks only 5 full blocks — 320 tokens — can ever be cached; the
+trailing 50 tokens are recomputed every time by anyone.
+
+```
+ceiling = 320 / 370 = 86.4%
+```
+
+| | Hit ratio | Share of the achievable | Prompt tokens recomputed |
+|---|---|---|---|
+| Arm A | 82.6% | **95.6%** | 17.4% |
+| Arm B | 78.4% | 90.7% | 21.6% |
+
+So prefix-aware routing recovered about **a quarter of the recomputation that
+round-robin leaves on the table** (21.6% → 17.4% of tokens). A 4-point headline
+understates it; against the reachable maximum it is the difference between
+capturing 91% and 96% of the available caching.
+
+#### What each arm's distribution shows
+
+Arm A concentrated unevenly on purpose — 15,006 to 44,458 tokens across the
+three prefill pods — because it is routing by prefix, and prefixes are not
+evenly sized. Arm B spread more evenly (16,304 / 21,160 / 16,992) except for one
+decode pod that received almost nothing (2,602), which is small-sample
+randomness in kube-proxy rather than a policy.
+
+**Even distribution is not the goal.** Round-robin achieves it by construction
+and gets a worse hit ratio for it. That is the whole argument in one line.
+
+#### The cost is unchanged and still real
+
+Arm A remains ~2.5× slower per request, and still touches prompt tokens twice
+(177,832 ≈ 2 × 88,916) because P/D sends the prompt to prefill and decode looks
+it up as well. Against a simulator that returns in microseconds, a scheduling
+round trip and a second backend call buy nothing back. **On a GPU, recomputing
+64 extra prompt tokens costs far more than 8 ms of routing** — which is where
+this trade is supposed to pay, and is exactly what this hardware cannot show.
+
+### Run 1 — untuned, 2026-09-23
 
 | | Arm A (prefix-aware + P/D) | Arm B (round-robin) |
 |---|---|---|
@@ -129,7 +186,7 @@ Routing had nothing to route for:
 3. **The distinguishing prefix is sub-block.** Below 64 tokens, per-user context
    is invisible to a block-granular cache.
 
-### The conclusion worth keeping
+### Run 1's conclusion, which run 2 refined
 
 > Cache-aware routing pays when the **distinguishing** prefix is long enough to
 > form whole blocks *and* the aggregate working set exceeds what one pod can
