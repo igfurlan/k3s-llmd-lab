@@ -13,6 +13,45 @@
 # The alternative — `--metrics-endpoint-auth=false` — would work in one line.
 # It is not used here, because turning off authentication to make monitoring
 # convenient is precisely the habit this kind of lab should not teach.
+# ---------------------------------------------------------------------------
+# FIRST, the side nobody thinks about: the EPP must be able to CHECK a token.
+#
+# controller-runtime's metrics filter does not validate bearer tokens itself.
+# It asks the API server, with a TokenReview ("who is this?") followed by a
+# SubjectAccessReview ("may they GET /metrics?"). Both are API calls made by
+# the EPP's own ServiceAccount — and the llm-d chart turns
+# `--metrics-endpoint-auth` on by default without granting it those rights:
+#
+#   Failed to make webhook authenticator request: tokenreviews.authentication.k8s.io
+#   is forbidden: User "system:serviceaccount:llm-d:sim-pool-epp" cannot create
+#   resource "tokenreviews" in API group "authentication.k8s.io" at cluster scope
+#
+# So EVERY authenticated request fails, whoever makes it and whatever token
+# they hold. Our credentials below were never the problem; we spent a while
+# proving a valid token invalid.
+#
+# `system:auth-delegator` is the built-in ClusterRole that exists for precisely
+# this: it grants create on tokenreviews and subjectaccessreviews, and nothing
+# else. It is the standard binding for any component that protects an endpoint
+# by delegating auth to the API server.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sim-pool-epp-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    # The EPP's ServiceAccount, created by the llm-d-router-gateway chart and
+    # named after the Helm release. Verify with:
+    #   kubectl -n llm-d get deploy sim-pool-epp -o jsonpath='{.spec.template.spec.serviceAccountName}'
+    name: sim-pool-epp
+    namespace: llm-d
+---
+# ---------------------------------------------------------------------------
+# SECOND, the side everyone thinks about: an identity for the scraper.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
