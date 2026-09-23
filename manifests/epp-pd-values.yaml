@@ -42,6 +42,12 @@ router:
     flags:
       # prefix-based-pd-decider is experimental and refuses to load without this.
       allow-experimental-plugins: true
+      # The decider logs its arithmetic at V(DEBUG) and nowhere else:
+      #   "Computed non-cached suffix" hitPrefixTokens=.. inputTokens=..
+      #                                nonCachedTokens=.. threshold=..
+      # Without this the split/no-split decision is invisible, and the only
+      # evidence is which pods' counters moved.
+      v: 4
 
     pluginsCustomConfig:
       pd-plugins.yaml: |
@@ -50,9 +56,22 @@ router:
         plugins:
         - type: prefix-based-pd-decider
           parameters:
-            # 0 disables the split (the default). 1 means "always split", which
-            # is what a lab wants: it makes the behaviour observable on every
-            # request instead of only on long prompts.
+            # NOT "always split" — that was wrong. From the plugin's source
+            # (prefix_based_pd_decider.go, computeNeedsRemotePrefill):
+            #
+            #   hitPrefixTokens = CachedBlockCount * BlockSizeTokens
+            #   nonCachedTokens = inputTokens - hitPrefixTokens
+            #   split           = nonCachedTokens >= threshold
+            #
+            # measured against the CHOSEN DECODE ENDPOINT. So 1 means "split
+            # whenever at least one token of this prompt is not already cached
+            # on the pod that would decode it", and 0 disables the plugin
+            # outright ("Prefix-based PD disabled (NonCachedTokens=0)").
+            #
+            # The economics: remote prefill buys parallelism at the cost of a KV
+            # transfer. When decode can already serve the prompt from cache
+            # there is no prefill work to move, and the transfer would be pure
+            # overhead. The threshold is where you place that trade-off.
             nonCachedTokens: 1
         - type: disagg-profile-handler
           parameters:
