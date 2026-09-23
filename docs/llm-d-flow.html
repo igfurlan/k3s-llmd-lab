@@ -1,0 +1,574 @@
+<title>llm-d Request Flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  :root {
+    --bg:        #f5f7f9;
+    --surface:   #ffffff;
+    --surface-2: #eaeff4;
+    --surface-3: #dfe6ed;
+    --ink:       #16202e;
+    --ink-2:     #4a5b6d;
+    --ink-3:     #7d8d9d;
+    --border:    #d6dee6;
+    --border-2:  #c2ccd6;
+    --accent:    #0b6e7d;
+    --accent-2:  #e6f4f6;
+    --split:     #9a5b06;
+    --split-2:   #fcefd9;
+
+    --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    --f-body:    "Source Sans 3", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --f-mono:    "JetBrains Mono", ui-monospace, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg:        #0d1319;
+      --surface:   #151d26;
+      --surface-2: #1c2631;
+      --surface-3: #24303d;
+      --ink:       #e4ecf3;
+      --ink-2:     #a0b2c2;
+      --ink-3:     #7f91a2;
+      --border:    #253140;
+      --border-2:  #35424f;
+      --accent:    #3fc9dc;
+      --accent-2:  #10303a;
+      --split:     #e9ae3c;
+      --split-2:   #332409;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg:        #0d1319;
+    --surface:   #151d26;
+    --surface-2: #1c2631;
+    --surface-3: #24303d;
+    --ink:       #e4ecf3;
+    --ink-2:     #a0b2c2;
+    --ink-3:     #7f91a2;
+    --border:    #253140;
+    --border-2:  #35424f;
+    --accent:    #3fc9dc;
+    --accent-2:  #10303a;
+    --split:     #e9ae3c;
+    --split-2:   #332409;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 16px;
+    line-height: 1.55;
+    margin: 0;
+    padding-inline: 20px;
+    padding-block: 0 56px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; }
+
+  header { padding-block: 40px 26px; }
+  .eyebrow {
+    font-family: var(--f-mono); font-size: 11px; font-weight: 500;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--accent); margin: 0 0 12px;
+  }
+  h1 {
+    font-family: var(--f-display); font-weight: 700;
+    font-size: clamp(1.9rem, 5vw, 2.7rem); line-height: 1.05;
+    letter-spacing: -0.025em; margin: 0 0 14px; text-wrap: balance;
+  }
+  .lede { font-size: 1.05rem; color: var(--ink-2); max-width: 66ch; margin: 0; }
+  .lede strong { color: var(--ink); font-weight: 600; }
+
+  /* ---- mode switch ---- */
+  .modes { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 24px 14px; }
+  .mode {
+    font-family: var(--f-mono); font-size: 11.5px; font-weight: 500;
+    letter-spacing: 0.04em;
+    padding: 9px 14px; border-radius: 3px; cursor: pointer;
+    background: var(--surface); color: var(--ink-2);
+    border: 1px solid var(--border-2);
+  }
+  .mode[aria-pressed="true"] {
+    background: var(--accent); color: var(--surface);
+    border-color: var(--accent); font-weight: 700;
+  }
+  .mode:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---- diagram ---- */
+  .stage {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: 14px 12px; overflow-x: auto;
+  }
+  svg.flow { display: block; width: 100%; min-width: 880px; height: auto; }
+
+  .hl { transition: opacity .22s ease; }
+  .dim { opacity: 0.17; }
+  @media (prefers-reduced-motion: reduce) { .hl { transition: none; } }
+
+  .n-box    { fill: var(--surface-2); stroke: var(--border-2); stroke-width: 1.2; }
+  .n-box-2  { fill: var(--surface-3); stroke: var(--border-2); stroke-width: 1.2; }
+  .n-group  { fill: none; stroke: var(--accent); stroke-width: 1.1; stroke-dasharray: 5 4; }
+  .e        { stroke: var(--accent); stroke-width: 2; fill: none; }
+  .e-split  { stroke: var(--split); stroke-width: 2; fill: none; }
+  .e-bg     { stroke: var(--ink-3); stroke-width: 1.4; fill: none; stroke-dasharray: 4 4; }
+  .t-label  { fill: var(--ink); font-family: var(--f-display); font-size: 13.5px; font-weight: 600; }
+  .t-cap    { fill: var(--ink-3); font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.07em; }
+  .t-edge   { fill: var(--accent); font-family: var(--f-mono); font-size: 10.5px; }
+  .t-edge-s { fill: var(--split); font-family: var(--f-mono); font-size: 10.5px; }
+  .t-edge-b { fill: var(--ink-3); font-family: var(--f-mono); font-size: 10.5px; }
+  .head     { fill: var(--accent); }
+  .head-s   { fill: var(--split); }
+  .head-b   { fill: var(--ink-3); }
+
+  /* ---- legend ---- */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 8px 22px;
+    margin-top: 12px; font-family: var(--f-mono); font-size: 10.5px;
+    color: var(--ink-3); letter-spacing: 0.04em;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .swatch { width: 22px; height: 0; border-top: 2px solid var(--accent); }
+  .swatch.split { border-top-color: var(--split); }
+  .swatch.bg { border-top: 2px dashed var(--ink-3); }
+
+  /* ---- steps ---- */
+  .steps { margin-top: 26px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  .chip {
+    font-family: var(--f-mono); font-size: 11px; font-weight: 500;
+    min-width: 32px; padding: 7px 10px; cursor: pointer;
+    background: var(--surface); color: var(--ink-2);
+    border: 1px solid var(--border); border-radius: 3px;
+  }
+  .chip[aria-pressed="true"] {
+    background: var(--accent-2); color: var(--accent);
+    border-color: var(--accent); font-weight: 700;
+  }
+  .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .readout {
+    display: grid; grid-template-columns: 1fr auto; gap: 20px; align-items: start;
+    background: var(--surface); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent); border-radius: 3px;
+    padding: 20px 22px; min-height: 148px;
+  }
+  .r-kicker {
+    font-family: var(--f-mono); font-size: 10px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-3); margin: 0 0 7px;
+  }
+  .r-title {
+    font-family: var(--f-display); font-size: 1.16rem; font-weight: 600;
+    margin: 0 0 9px; color: var(--ink); text-wrap: balance;
+  }
+  .r-body { margin: 0; font-size: 0.95rem; color: var(--ink-2); max-width: 64ch; }
+  .r-body code {
+    font-family: var(--f-mono); font-size: 0.86em; background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px;
+  }
+  .r-body b { color: var(--ink); font-weight: 600; }
+
+  .nav { display: flex; gap: 8px; }
+  .nav button {
+    font-family: var(--f-mono); font-size: 15px; line-height: 1;
+    width: 40px; height: 36px; cursor: pointer;
+    background: var(--surface-2); color: var(--ink);
+    border: 1px solid var(--border-2); border-radius: 3px;
+  }
+  .nav button:disabled { opacity: 0.35; cursor: default; }
+  .nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .hint {
+    font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-3);
+    margin-top: 10px; letter-spacing: 0.04em;
+  }
+
+  footer {
+    margin-top: 40px; padding-top: 22px; border-top: 1px solid var(--border);
+    color: var(--ink-3); font-size: 0.86rem;
+  }
+  footer a { color: var(--accent); }
+  footer p { margin: 0 0 8px; max-width: 66ch; }
+
+  @media (max-width: 620px) {
+    .readout { grid-template-columns: 1fr; }
+    .nav { justify-content: flex-start; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">k3s-llmd-lab · measured on a 3-node cluster</p>
+    <h1>llm-d Request Flow</h1>
+    <p class="lede">
+      What happens between <code style="font-family:var(--f-mono);font-size:0.86em">curl</code>
+      and a token. The gateway does not choose a backend — it <strong>pauses mid-request</strong>
+      to ask a scheduler that reads the prompt, knows which pod holds its cached prefix, and
+      may decide the request is worth splitting across two machines.
+      <strong>Step through it below.</strong>
+    </p>
+  </header>
+
+  <div class="modes" role="group" aria-label="Which request">
+    <button class="mode" id="m-split"  aria-pressed="true">COLD PROMPT — SPLITS ACROSS PREFILL + DECODE</button>
+    <button class="mode" id="m-cached" aria-pressed="false">CACHED PROMPT — DECODE ONLY</button>
+  </div>
+
+  <div class="stage">
+    <svg class="flow" viewBox="0 0 1120 620" xmlns="http://www.w3.org/2000/svg" role="img"
+         aria-label="A request reaches the agentgateway, which calls the endpoint picker over ext_proc. The picker tokenizes the prompt through a render service, decides whether to disaggregate, scores candidates with a prefill profile and a decode profile, and answers with the endpoints to use. The gateway forwards to a decode pod whose sidecar fetches the prefill and receives the KV cache; the response streams back. Prometheus scrapes both the model servers and the picker.">
+      <defs>
+        <marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <polygon class="head" points="0,0 8,4 0,8"></polygon>
+        </marker>
+        <marker id="as" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <polygon class="head-s" points="0,0 8,4 0,8"></polygon>
+        </marker>
+        <marker id="ab" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <polygon class="head-b" points="0,0 8,4 0,8"></polygon>
+        </marker>
+      </defs>
+
+      <!-- client -->
+      <g class="hl" id="n-client">
+        <rect class="n-box" x="24" y="150" width="112" height="52" rx="3"></rect>
+        <text class="t-label" x="80" y="178" text-anchor="middle">client</text>
+        <text class="t-cap"   x="80" y="194" text-anchor="middle">OPENAI API</text>
+      </g>
+      <g class="hl" id="e-client-gw">
+        <path class="e" d="M136 176 L174 176" marker-end="url(#a)"></path>
+      </g>
+
+      <!-- gateway -->
+      <g class="hl" id="n-gateway">
+        <rect class="n-box" x="180" y="132" width="150" height="88" rx="3"></rect>
+        <text class="t-label" x="255" y="170" text-anchor="middle">agentgateway</text>
+        <text class="t-cap"   x="255" y="188" text-anchor="middle">GATEWAY API · :80</text>
+      </g>
+
+      <!-- gateway -> pool -->
+      <g class="hl" id="e-gw-pool">
+        <path class="e" d="M330 162 L922 162" marker-end="url(#a)"></path>
+        <text class="t-edge" x="626" y="154" text-anchor="middle">forwarded to decode · x-prefiller-host-port</text>
+      </g>
+
+      <!-- inference pool -->
+      <g class="hl" id="n-pool">
+        <rect class="n-group" x="740" y="96" width="356" height="290" rx="4"></rect>
+        <text class="t-cap" x="754" y="116">INFERENCEPOOL · SELECTOR app=sim</text>
+      </g>
+      <g class="hl" id="n-sidecar">
+        <rect class="n-box-2" x="930" y="140" width="146" height="44" rx="3"></rect>
+        <text class="t-label" x="1003" y="162" text-anchor="middle">pd-sidecar</text>
+        <text class="t-cap"   x="1003" y="177" text-anchor="middle">:8000 → :8200</text>
+      </g>
+      <g class="hl" id="n-decode">
+        <rect class="n-box" x="930" y="210" width="146" height="62" rx="3"></rect>
+        <text class="t-label" x="1003" y="238" text-anchor="middle">decode × 3</text>
+        <text class="t-cap"   x="1003" y="256" text-anchor="middle">AGENT-2 · BANDWIDTH</text>
+      </g>
+      <g class="hl" id="n-prefill">
+        <rect class="n-box" x="760" y="210" width="146" height="62" rx="3"></rect>
+        <text class="t-label" x="833" y="238" text-anchor="middle">prefill × 3</text>
+        <text class="t-cap"   x="833" y="256" text-anchor="middle">AGENT-1 · COMPUTE</text>
+      </g>
+      <g class="hl" id="e-sidecar-decode">
+        <path class="e" d="M1003 184 L1003 206" marker-end="url(#a)"></path>
+      </g>
+      <g class="hl" id="e-sidecar-prefill">
+        <path class="e-split" d="M930 172 L880 172 L880 206" marker-end="url(#as)"></path>
+        <text class="t-edge-s" x="874" y="166" text-anchor="end">prefill request</text>
+      </g>
+      <g class="hl" id="e-kv">
+        <path class="e-split" d="M833 272 L833 306 L1003 306 L1003 276" marker-end="url(#as)"></path>
+        <text class="t-edge-s" x="918" y="326" text-anchor="middle">KV cache · modelled, not moved</text>
+      </g>
+
+      <!-- response -->
+      <g class="hl" id="e-response">
+        <path class="e" d="M740 350 L355 350 L355 226" marker-end="url(#a)"></path>
+        <text class="t-edge" x="548" y="342" text-anchor="middle">response streams back</text>
+      </g>
+
+      <!-- epp -->
+      <g class="hl" id="n-epp">
+        <rect class="n-group" x="420" y="420" width="330" height="180" rx="4"></rect>
+        <text class="t-cap" x="434" y="442">ENDPOINT PICKER · EXT_PROC :9002</text>
+      </g>
+      <g class="hl" id="n-tokenizer">
+        <rect class="n-box" x="436" y="456" width="140" height="44" rx="3"></rect>
+        <text class="t-label" x="506" y="478" text-anchor="middle">tokenizer</text>
+        <text class="t-cap"   x="506" y="492" text-anchor="middle">TOKEN-PRODUCER</text>
+      </g>
+      <g class="hl" id="n-decider">
+        <rect class="n-box" x="592" y="456" width="140" height="44" rx="3"></rect>
+        <text class="t-label" x="662" y="478" text-anchor="middle">P/D decider</text>
+        <text class="t-cap"   x="662" y="492" text-anchor="middle">SPLIT, OR NOT</text>
+      </g>
+      <g class="hl" id="n-prefill-profile">
+        <rect class="n-box" x="436" y="514" width="296" height="34" rx="3"></rect>
+        <text class="t-label" x="450" y="536">prefill profile</text>
+        <text class="t-cap"   x="718" y="536" text-anchor="end">PREFIX ×3 · QUEUE ×1</text>
+      </g>
+      <g class="hl" id="n-decode-profile">
+        <rect class="n-box" x="436" y="556" width="296" height="34" rx="3"></rect>
+        <text class="t-label" x="450" y="578">decode profile</text>
+        <text class="t-cap"   x="718" y="578" text-anchor="end">PREFIX ×3 · QUEUE ×2 · KV ×2</text>
+      </g>
+      <g class="hl" id="e-gw-epp">
+        <path class="e" d="M255 220 L255 470 L416 470" marker-end="url(#a)"></path>
+        <text class="t-edge" x="300" y="462">headers + body</text>
+      </g>
+      <g class="hl" id="e-epp-gw">
+        <path class="e" d="M416 540 L215 540 L215 226" marker-end="url(#a)"></path>
+        <text class="t-edge" x="230" y="556">endpoints to use</text>
+      </g>
+
+      <!-- render -->
+      <g class="hl" id="n-render">
+        <rect class="n-box" x="790" y="456" width="170" height="52" rx="3"></rect>
+        <text class="t-label" x="875" y="480" text-anchor="middle">render</text>
+        <text class="t-cap"   x="875" y="496" text-anchor="middle">VLLM TOKENIZER · NO WEIGHTS</text>
+      </g>
+      <g class="hl" id="e-epp-render">
+        <path class="e" d="M576 477 L786 477" marker-end="url(#a)"></path>
+        <text class="t-edge" x="681" y="469" text-anchor="middle">exact token ids</text>
+      </g>
+      <g class="hl" id="e-pool-render">
+        <path class="e-bg" d="M836 386 L836 452" marker-end="url(#ab)"></path>
+        <text class="t-edge-b" x="844" y="422">same tokenizer · block hashing</text>
+      </g>
+
+      <!-- observability -->
+      <g class="hl" id="n-obs">
+        <rect class="n-box" x="986" y="520" width="118" height="64" rx="3"></rect>
+        <text class="t-label" x="1045" y="546" text-anchor="middle">Prometheus</text>
+        <text class="t-cap"   x="1045" y="564" text-anchor="middle">+ GRAFANA</text>
+      </g>
+      <g class="hl" id="e-pool-obs">
+        <path class="e-bg" d="M1040 386 L1040 516" marker-end="url(#ab)"></path>
+        <text class="t-edge-b" x="1048" y="452">vllm:*</text>
+      </g>
+      <g class="hl" id="e-epp-obs">
+        <path class="e-bg" d="M750 562 L982 562" marker-end="url(#ab)"></path>
+        <text class="t-edge-b" x="866" y="554" text-anchor="middle">llm_d_epp_* · authenticated</text>
+      </g>
+
+      <!-- ollama -->
+      <g class="hl" id="n-ollama">
+        <rect class="n-box" x="24" y="430" width="150" height="48" rx="3"></rect>
+        <text class="t-label" x="99" y="454" text-anchor="middle">ollama</text>
+        <text class="t-cap"   x="99" y="470" text-anchor="middle">QWEN2.5:0.5B · REAL</text>
+      </g>
+      <g class="hl" id="e-gw-ollama">
+        <path class="e-bg" d="M300 220 L300 402 L99 402 L99 426" marker-end="url(#ab)"></path>
+        <text class="t-edge-b" x="200" y="394" text-anchor="middle">/ollama · no picker</text>
+      </g>
+    </svg>
+
+    <div class="legend">
+      <span><i class="swatch"></i> request path</span>
+      <span><i class="swatch split"></i> only on a split</span>
+      <span><i class="swatch bg"></i> continuous, not per-request</span>
+    </div>
+  </div>
+
+  <div class="steps">
+    <div class="chips" id="chips" role="group" aria-label="Steps"></div>
+
+    <div class="readout">
+      <div>
+        <p class="r-kicker" id="r-kicker">The whole path</p>
+        <h2 class="r-title" id="r-title">Everything, at rest</h2>
+        <p class="r-body" id="r-body"></p>
+      </div>
+      <div class="nav">
+        <button id="prev" aria-label="Previous step">←</button>
+        <button id="next" aria-label="Next step">→</button>
+      </div>
+    </div>
+    <p class="hint">Arrow keys step through · every figure came off the running cluster</p>
+  </div>
+
+  <footer>
+    <p>
+      The model servers are <b>simulators</b> emitting vLLM's own metric names, so the gateway,
+      the scheduler and every dashboard behave exactly as they would against real vLLM. The
+      KV transfer is modelled rather than performed. What this lab proves is where the
+      scheduler sends requests and what that costs — not what a cache hit is worth in seconds,
+      which needs real weights on real accelerators.
+    </p>
+    <p>
+      Manifests, dashboards, benchmark and write-ups:
+      <a href="https://github.com/igfurlan/k3s-llmd-lab">github.com/igfurlan/k3s-llmd-lab</a>
+    </p>
+  </footer>
+</div>
+
+<script>
+(function () {
+  var ALL = ["n-client","e-client-gw","n-gateway","e-gw-pool","n-pool","n-sidecar","n-decode",
+             "n-prefill","e-sidecar-decode","e-sidecar-prefill","e-kv","e-response","n-epp",
+             "n-tokenizer","n-decider","n-prefill-profile","n-decode-profile","e-gw-epp",
+             "e-epp-gw","n-render","e-epp-render","e-pool-render","n-obs","e-pool-obs",
+             "e-epp-obs","n-ollama","e-gw-ollama"];
+
+  var OVERVIEW = {
+    kicker: "The whole path",
+    title: "Everything, at rest",
+    body: "A request enters at the gateway, which consults the endpoint picker before choosing " +
+          "anywhere to send it. Dashed edges run continuously rather than per request: the shared " +
+          "tokenizer that makes both sides hash prompts identically, the metrics Prometheus scrapes, " +
+          "and a second route carrying real inference from ollama. Step through to follow one request.",
+    on: null
+  };
+
+  var SPLIT = [
+    { kicker: "Step 1", title: "A request arrives",
+      body: "An ordinary OpenAI-shaped <code>/v1/chat/completions</code> call hits the gateway on port 80. " +
+            "Nothing about the client is llm-d-aware — that is the point of putting the intelligence behind a standard API.",
+      on: ["n-client","e-client-gw","n-gateway"] },
+    { kicker: "Step 2", title: "The gateway stops and asks",
+      body: "Before picking a backend the gateway opens a gRPC stream to the picker and sends the request — " +
+            "<b>headers and body</b>. A normal load balancer never reads the body; here the body is the whole point, " +
+            "because the prompt determines which pod is warm.",
+      on: ["n-gateway","e-gw-epp","n-epp"] },
+    { kicker: "Step 3", title: "The prompt is tokenized",
+      body: "The picker calls a shared <b>render service</b> — vLLM running as a tokenizer, no weights, no GPU — for exact token ids. " +
+            "This matters more than it looks: the model servers hash their cached blocks with the same tokenizer. " +
+            "Different tokenizers, and no block hash ever matches, so cache-aware routing silently degrades to guessing.",
+      on: ["n-epp","n-tokenizer","e-epp-render","n-render"] },
+    { kicker: "Step 4", title: "Split, or not?",
+      body: "The decider computes <code>inputTokens − cachedBlocks × 64</code> against the decode pod that would serve it. " +
+            "Here a cold 109-token prompt has nothing cached, so the suffix is 109 and the request splits. " +
+            "<b>Disaggregation buys parallelism and pays a KV transfer for it</b> — it is only worth doing when there is real prefill work to move.",
+      on: ["n-epp","n-decider"] },
+    { kicker: "Step 5", title: "Two profiles, opposite priorities",
+      body: "Prefill scores candidates on cache locality over queue depth, <b>3 to 1</b>: a pod holding this prefix skips the expensive pass entirely. " +
+            "Decode weights queue depth and cache headroom instead, because its work is long-lived and bandwidth-bound. " +
+            "Same cluster, same plugins, inverted priorities — six integers that are the actual policy.",
+      on: ["n-epp","n-prefill-profile","n-decode-profile","n-prefill","n-decode"] },
+    { kicker: "Step 6", title: "The picker answers — it never forwards",
+      body: "Back over ext_proc come the endpoints to use, with the prefill pod named in an " +
+            "<code>x-prefiller-host-port</code> header. Scheduling costs <b>95 µs</b> against a 23.8 ms time-to-first-token: " +
+            "about 0.4% of the request, which is the ratio that justifies a scheduler in the path at all.",
+      on: ["n-epp","e-epp-gw","n-gateway"] },
+    { kicker: "Step 7", title: "The sidecar does the work the header implies",
+      body: "The gateway forwards to a decode pod — and a proxy sidecar in front of it reads that header and calls the prefill pod. " +
+            "<b>Without this component the header is inert</b>: every plugin loads, the logs say disaggregation is enabled, " +
+            "and nothing is ever split. That cost a day, and the only contradicting evidence was a Prometheus counter that did not exist on the prefill pod.",
+      on: ["e-gw-pool","n-pool","n-sidecar","e-sidecar-prefill","n-prefill"] },
+    { kicker: "Step 8", title: "KV moves, decode generates",
+      body: "Prefill produces the KV cache and hands it to decode, which emits tokens one at a time and streams the answer back through the gateway. " +
+            "In production that transfer crosses the network over NIXL; <b>here it is modelled as latency</b> — the orchestration is genuine, the bytes are not.",
+      on: ["n-prefill","e-kv","n-decode","e-sidecar-decode","e-response","n-gateway","n-client"] },
+    { kicker: "Always on", title: "What runs between requests",
+      body: "The model servers publish cache-block events and vLLM-format metrics; the picker exposes its own, behind token authentication. " +
+            "Prometheus scrapes both, and the dashboards are built from the decisions they drive — " +
+            "<b>which scorer weight to change, when to stop disaggregating, when a distribution fault is masquerading as a capacity problem</b>.",
+      on: ["n-pool","e-pool-obs","n-obs","e-epp-obs","n-epp","e-pool-render","n-render"] }
+  ];
+
+  var CACHED = [
+    { kicker: "Step 1", title: "The same request, second time",
+      body: "Identical prompt, moments later. Everything up to the decision is unchanged: the gateway consults the picker, and the prompt is tokenized against the same render service.",
+      on: ["n-client","e-client-gw","n-gateway","e-gw-epp","n-epp","n-tokenizer","e-epp-render","n-render"] },
+    { kicker: "Step 2", title: "The arithmetic goes negative",
+      body: "The decode pod now holds the prompt. The decider credits <code>2 blocks × 64 = 128</code> cached tokens against a 109-token prompt, " +
+            "so the non-cached suffix is <b>−19</b> — below the threshold, measured on this cluster. " +
+            "Block-granular accounting rounds up, and a fully-cached prompt is scored as more than fully cached.",
+      on: ["n-epp","n-decider"] },
+    { kicker: "Step 3", title: "No split — and that is correct",
+      body: "Only the decode profile runs. There is no prefill work left to move, so shipping a KV cache across the network would be pure cost. " +
+            "<b>Splitting once on a cold prompt and never again for that prompt is the optimal behaviour</b> — " +
+            "which is why a benchmark that sends the same prompt repeatedly makes a working setup look broken.",
+      on: ["n-epp","n-decode-profile","e-epp-gw","n-gateway"] },
+    { kicker: "Step 4", title: "Straight to decode",
+      body: "The gateway forwards to the chosen decode pod, which prefills locally from its own cache and generates. " +
+            "The prefill pods sit idle for this request — visible in the metrics as a prefix-cache counter that never moves.",
+      on: ["e-gw-pool","n-pool","n-sidecar","e-sidecar-decode","n-decode","e-response","n-gateway","n-client"] }
+  ];
+
+  var mode = "split", idx = -1;
+  var chips = document.getElementById("chips");
+  var kicker = document.getElementById("r-kicker");
+  var title = document.getElementById("r-title");
+  var body = document.getElementById("r-body");
+  var prev = document.getElementById("prev");
+  var next = document.getElementById("next");
+
+  function steps() { return mode === "split" ? SPLIT : CACHED; }
+
+  function paint() {
+    var step = idx < 0 ? OVERVIEW : steps()[idx];
+    kicker.textContent = step.kicker;
+    title.textContent = step.title;
+    body.innerHTML = step.body;
+
+    var on = step.on;
+    for (var i = 0; i < ALL.length; i++) {
+      var el = document.getElementById(ALL[i]);
+      if (!el) continue;
+      if (!on) el.classList.remove("dim");
+      else if (on.indexOf(ALL[i]) >= 0) el.classList.remove("dim");
+      else el.classList.add("dim");
+    }
+
+    var cs = chips.children;
+    for (var j = 0; j < cs.length; j++) {
+      cs[j].setAttribute("aria-pressed", String(j - 1 === idx));
+    }
+    prev.disabled = idx < 0;
+    next.disabled = idx >= steps().length - 1;
+  }
+
+  function buildChips() {
+    chips.innerHTML = "";
+    var all = document.createElement("button");
+    all.className = "chip";
+    all.textContent = "ALL";
+    all.onclick = function () { idx = -1; paint(); };
+    chips.appendChild(all);
+    steps().forEach(function (s, i) {
+      var b = document.createElement("button");
+      b.className = "chip";
+      b.textContent = String(i + 1);
+      b.title = s.title;
+      b.onclick = function () { idx = i; paint(); };
+      chips.appendChild(b);
+    });
+  }
+
+  function setMode(m) {
+    mode = m;
+    document.getElementById("m-split").setAttribute("aria-pressed", String(m === "split"));
+    document.getElementById("m-cached").setAttribute("aria-pressed", String(m === "cached"));
+    idx = -1;
+    buildChips();
+    paint();
+  }
+
+  document.getElementById("m-split").onclick = function () { setMode("split"); };
+  document.getElementById("m-cached").onclick = function () { setMode("cached"); };
+  prev.onclick = function () { if (idx >= 0) { idx--; paint(); } };
+  next.onclick = function () { if (idx < steps().length - 1) { idx++; paint(); } };
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "ArrowRight") { if (idx < steps().length - 1) { idx++; paint(); } }
+    else if (e.key === "ArrowLeft") { if (idx >= 0) { idx--; paint(); } }
+  });
+
+  buildChips();
+  paint();
+})();
+</script>
