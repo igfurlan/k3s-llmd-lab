@@ -26,11 +26,30 @@ kubectl apply -f ~/manifests/20-gateway.yaml
 | File | What it is |
 |---|---|
 | `00-namespace.yaml` | The `llm-d` namespace |
+| `05-render.yaml` | The tokenizer service. Real token IDs for both the simulators and the router |
 | `10-sim-prefill.yaml` | Simulated model server, prefill role, pinned to `k3s-agent-1` |
 | `11-sim-decode.yaml` | Simulated model server, decode role, pinned to `k3s-agent-2` |
 | `20-gateway.yaml` | The Gateway, implemented by agentgateway |
 | `epp-values.yaml` | Helm values for the InferencePool and endpoint picker — baseline scheduling |
 | `epp-pd-values.yaml` | The same, plus prefill/decode disaggregation. Applied second, on purpose |
+
+## The model name appears in three places
+
+`Qwen/Qwen2.5-1.5B-Instruct` must match in `05-render.yaml`, both simulator
+`--model` arguments, and (once precise routing is configured) the EPP's
+`token-producer` `modelName`. A mismatch is rejected rather than silently
+tokenising against the wrong vocabulary.
+
+It replaced `meta-llama/Llama-3.1-8B-Instruct`, which is **gated** on
+HuggingFace — fetching its tokenizer needs an access token, and this lab's
+"no credentials required" property is worth more than the model name.
+
+Requests must use the new name:
+
+```bash
+curl -s http://192.168.58.11/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"Qwen/Qwen2.5-1.5B-Instruct","messages":[{"role":"user","content":"..."}]}'
+```
 
 The InferencePool and the endpoint picker are **not** manifests — they come from
 the `llm-d-router-gateway` Helm chart, with `epp-pd-values.yaml` supplying the

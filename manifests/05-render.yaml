@@ -1,0 +1,95 @@
+# The tokenizer service.
+#
+# WHY THIS EXISTS
+#   The simulator says it itself, on every start, when this is missing:
+#
+#     "Model name looks like a HuggingFace repo id but --render-url is not set;
+#      falling back to the simulated tokenizer. Token ids will be pseudo-hashes
+#      and will not match a real vLLM tokenizer, breaking KV-cache block hashing
+#      and prefix-cache routing."
+#
+#   Prefix-cache routing works by hashing fixed-size blocks of token IDs. The
+#   model servers hash the blocks they hold; the router hashes the incoming
+#   prompt and looks for matches. If the two sides tokenize differently, no hash
+#   ever matches and cache-aware routing silently degrades to guesswork. So both
+#   sides have to tokenize with the SAME real tokenizer — which is what this
+#   service provides, over vLLM's /v1/*/render endpoints.
+#
+#   In llm-d's own guide the render endpoint is served by the vLLM model servers
+#   themselves. Our model servers are simulators and have no such endpoint, so
+#   this is the standalone variant: one shared pool that both the simulators
+#   (--render-url) and the EPP (token-producer) call.
+#
+# NO GPU AND NO WEIGHTS
+#   `vllm launch render` loads the tokenizer, not the model. It runs on the CPU
+#   image. Verify that claim from the pod's own logs on first start rather than
+#   trusting this comment.
+#
+# THE MODEL CHANGED, DELIBERATELY
+#   meta-llama/Llama-3.1-8B-Instruct is GATED on HuggingFace: fetching its
+#   tokenizer needs an access token. Qwen2.5-1.5B-Instruct is public and small,
+#   so the lab keeps its "no credentials required" property. The model name must
+#   match in three places -- here, the simulators' --model, and the EPP's
+#   token-producer modelName -- or the render call is rejected outright.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: render
+  namespace: llm-d
+  labels:
+    app: render
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: render
+  template:
+    metadata:
+      labels:
+        app: render
+    spec:
+      # Pinned to the control plane so the two agents stay dedicated to the
+      # prefill/decode pair. `kubectl get pods -o wide` then reads as the
+      # architecture diagram.
+      nodeSelector:
+        kubernetes.io/hostname: k3s-server
+      containers:
+        - name: render
+          image: vllm/vllm-openai-cpu:v0.21.0
+          command: ["vllm"]
+          args: ["launch", "render", "Qwen/Qwen2.5-1.5B-Instruct", "--port=8082"]
+          ports:
+            - name: http
+              containerPort: 8082
+          # Generous: the first start downloads the tokenizer from HuggingFace,
+          # and this image is large enough that the pull dominates.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            periodSeconds: 5
+            failureThreshold: 120
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: render
+  namespace: llm-d
+spec:
+  selector:
+    app: render
+  ports:
+    - name: http
+      port: 8082
+      targetPort: 8082
