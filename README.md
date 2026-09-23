@@ -191,6 +191,7 @@ VM down, attaches, and starts it again — and why provisioning waits for the se
 
 | Document | What it covers |
 |---|---|
+| [next-increments.md](docs/next-increments.md) | **What is planned next** — precise prefix-cache routing, what the original plan left unfinished, and the experiments this cluster is already equipped to run |
 | [reading-the-dashboard.md](docs/reading-the-dashboard.md) | **Each panel mapped to the decision it drives** — which weight to change, when to stop disaggregating, why replicas cannot fix a distribution fault |
 | [epp-scheduling.md](docs/epp-scheduling.md) | The endpoint picker: profiles, weighted scorers, the P/D decider's arithmetic, and how "enabled" was not "operating" |
 | [postmortem-vagrant.md](docs/postmortem-vagrant.md) | Four wrong hypotheses, one `ioapic=off`, and the measurement that ended it |
