@@ -178,7 +178,7 @@ as on the VirtualBox box. `--flannel-iface=eth1` carries over unchanged.
    and holding `192.168.58.x`, node-to-node reachable, swap 0, SELinux enforcing, root ~128 GB,
    and **`dmesg | grep -c hrtimer` = 0**.
 6. Re-run the llm-d install sequence (below).
-7. **Apply the P/D decider config** — the one thing we never got to test.
+7. ~~Apply the P/D decider config~~ — DONE 2026-09-23, verified in the EPP log. See epp-scheduling.md.
 8. Update `postmortem-vagrant.md` with the migration and the measurement that justified it.
 9. Confirm the now-unpinned kernel boots, and reconsider re-enabling metrics-server.
 

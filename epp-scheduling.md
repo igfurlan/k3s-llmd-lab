@@ -195,3 +195,75 @@ kubectl get pods -n llm-d -o wide -L llm-d.ai/role
 **Open item:** on this cluster `/metrics` returns an empty body. GAIE's EPP commonly requires
 a bearer token on that endpoint, so the next step is checking the status code with `curl -i`
 rather than assuming the metrics are absent.
+
+---
+
+## Prefill/decode disaggregation — enabled and verified (2026-09-23)
+
+On the VirtualBox cluster every plugin name below loaded and P/D still stayed off, because
+nothing was driving the plugins:
+
+```
+disagg/disagg_profile_handler.go:172  "No deciders.prefill configured, P/D disaggregation disabled"
+```
+
+The missing piece was one parameter — `deciders.prefill` on the profile handler, naming a
+decider plugin. The full values file is [manifests/epp-pd-values.yaml](manifests/epp-pd-values.yaml);
+the part that matters:
+
+```yaml
+- type: prefix-based-pd-decider
+  parameters:
+    nonCachedTokens: 1        # 0 = disabled (the default). 1 = always split.
+- type: disagg-profile-handler
+  parameters:
+    deciders:
+      prefill: prefix-based-pd-decider
+```
+
+`nonCachedTokens` is the threshold: a request is split only when it has at least this many
+tokens that no pod has cached. The default `0` disables the split entirely, which is the
+trap — the plugin is loaded, configured and inert. `1` means "always split", which is what a
+lab wants: the behaviour becomes observable on every request rather than only on long
+prompts.
+
+Confirmation is in the EPP's own startup log, `EPP config after phase two`:
+
+```
+ProfileHandler: disagg-profile-handler/disagg-profile-handler
+Profiles: map[
+  decode:  {Filters: [decode-filter/by-label],
+            Scorers: [queue-scorer: 3.0, kv-cache-utilization-scorer: 2.0],
+            Picker: max-score-picker}
+  prefill: {Filters: [prefill-filter/by-label],
+            Scorers: [prefix-cache-scorer: 3.0, queue-scorer: 1.0],
+            Picker: max-score-picker}]
+```
+
+### Three things that log reveals
+
+**A decoy message.** `No deciders.encode configured, E disaggregation disabled` appears right
+next to the success. That is *encode* — a third stage for multimodal inputs — not prefill.
+Reading it as a failure costs an afternoon.
+
+**The EPP wires its own data layer.** It logs
+`auto-created default producer: token-producer → TokenizedPrompt → consumer: disagg-profile-handler`.
+The decider counts tokens, so the EPP instantiated a tokenizer and connected it without being
+asked. That line is better proof that the decider is *live* than the config dump is, since a
+parsed-but-unused plugin would not need a producer.
+
+**System defaults fill the gaps.** `max-score-picker` is appended to both profiles — scorers
+only produce numbers, and a picker is what turns them into a choice — along with
+`openai-parser`, `anthropic-parser` and `vllmhttp-parser`. That parser list is why pointing
+this pool at a real Anthropic backend is a configuration change rather than a rewrite; see
+[model-backends.md](model-backends.md).
+
+### Why the weights differ between profiles
+
+| Profile | Weights | Reasoning |
+|---|---|---|
+| **prefill** | `prefix-cache-scorer` 3, `queue-scorer` 1 | A pod that already holds this prefix skips the expensive pass entirely. Cache locality is worth more than an even queue — 3:1 |
+| **decode** | `queue-scorer` 3, `kv-cache-utilization-scorer` 2 | Decode work is long-lived and bandwidth-bound. Locality no longer helps; free capacity does |
+
+Same cluster, same plugins, opposite priorities — which is the argument for splitting the
+phases stated as six integers.
