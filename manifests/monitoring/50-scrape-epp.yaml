@@ -17,9 +17,21 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: epp-metrics-reader
-  # In Prometheus's namespace, not the workload's: the operator can only mount
-  # secrets that live alongside Prometheus.
-  namespace: monitoring
+  # In the WORKLOAD's namespace, beside the ServiceMonitor that references it.
+  #
+  # The intuition to resist: "Prometheus reads the secret, so it belongs with
+  # Prometheus." It does not. The operator resolves scrape credentials in the
+  # ServiceMonitor's own namespace and writes them into the config it
+  # generates, so a secret in `monitoring` is invisible to a monitor in
+  # `llm-d`. Getting this backwards costs a rejected monitor and this message:
+  #
+  #   "llm-d/sim-pool-epp" was rejected due to invalid configuration:
+  #   endpoints[0]: authorization: failed to get authorization token of type
+  #   "Bearer": unable to get secret "epp-metrics-token": not found
+  #
+  # Which is at least a loud failure — the operator logs it and emits a
+  # Warning event, unlike the silent ones this stack specialises in.
+  namespace: llm-d
 ---
 # A non-resource URL grant. Not a Role on objects — /metrics is not an API
 # object, so it is reached through nonResourceURLs.
@@ -42,7 +54,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: epp-metrics-reader
-    namespace: monitoring
+    namespace: llm-d
 ---
 # A long-lived token for that ServiceAccount.
 #
@@ -54,7 +66,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: epp-metrics-token
-  namespace: monitoring
+  namespace: llm-d
   annotations:
     kubernetes.io/service-account.name: epp-metrics-reader
 type: kubernetes.io/service-account-token
