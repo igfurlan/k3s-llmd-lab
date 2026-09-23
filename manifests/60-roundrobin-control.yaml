@@ -1,0 +1,61 @@
+# The control arm of the A/B experiment.
+#
+# A plain Kubernetes Service over the same two model servers, exposed on the
+# same Gateway at /rr. No InferencePool, no endpoint picker, no prefix
+# awareness — kube-proxy's round-robin, which is what inference traffic gets
+# without the Gateway API Inference Extension.
+#
+#   /v1/chat/completions      -> InferencePool -> EPP  (arm A: prefix-aware, P/D)
+#   /rr/v1/chat/completions   -> Service       -> random pod  (arm B: control)
+#
+# SAME PODS ON PURPOSE. Giving arm B its own replicas would mean comparing two
+# sets of caches on two sets of hardware, and any difference could be dismissed
+# as placement luck. Same pods, cleared between runs, isolates the one variable
+# that matters: how requests are distributed.
+#
+# The asymmetry worth naming: on the decode pod, port 8000 is the routing
+# sidecar, which proxies anything it does not handle straight to the simulator.
+# So arm B traverses one extra in-pod hop there and not on prefill. It is a
+# localhost proxy on an idle CPU — noise against a 23 ms TTFT — but it is not
+# nothing, and pretending otherwise would be the kind of quiet asymmetry that
+# makes a benchmark lie.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sim-rr
+  namespace: llm-d
+  labels:
+    app.kubernetes.io/part-of: llm-d-lab
+    bench: roundrobin
+spec:
+  # Selects BOTH roles — exactly the point. Without an endpoint picker there is
+  # no such thing as a prefill pod or a decode pod, just endpoints.
+  selector:
+    app: sim
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: sim-roundrobin
+  namespace: llm-d
+spec:
+  parentRefs:
+    - name: inference-gateway
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /rr
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: sim-rr
+          port: 8000
