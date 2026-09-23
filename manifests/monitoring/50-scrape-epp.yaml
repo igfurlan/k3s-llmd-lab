@@ -69,11 +69,17 @@ metadata:
 spec:
   selector:
     matchLabels:
-      # The Service the llm-d-router-gateway chart creates for the EPP.
-      # Verify with: kubectl -n llm-d get svc sim-pool-epp --show-labels
-      app.kubernetes.io/name: llm-d-router-gateway
+      # Read off the running Service, not guessed:
+      #   kubectl -n llm-d get svc sim-pool-epp --show-labels
+      # The chart names it after the Helm RELEASE (sim-pool), not after the
+      # chart — so a second pool would need its own ServiceMonitor, or a
+      # selector on a label both share.
+      app.kubernetes.io/name: sim-pool-epp
   endpoints:
-    - port: metrics          # the EPP's 9090
+    # `http-metrics`, not `metrics`. Also read off the Service:
+    #   kubectl -n llm-d get svc sim-pool-epp -o jsonpath='{.spec.ports}'
+    # A wrong port name here fails the same silent way a wrong selector does.
+    - port: http-metrics     # the EPP's 9090
       path: /metrics
       interval: 15s
       authorization:
