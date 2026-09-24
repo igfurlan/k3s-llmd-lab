@@ -242,17 +242,25 @@ The guide's `15926` was calibrated on Qwen3-32B / H100 / TP=2. The filter uses i
 decide when a cache-warm pod is too loaded to stay sticky; set it wrong and either
 everything pins to one pod or stickiness never engages.
 
-The simulator makes this tractable. Its latency model is
-`total prefill = prefill-overhead + n × prefill-time-per-token`, so:
+The simulator makes this tractable. Its per-token prefill model is
+`prefill-overhead + (n − n_cached) × prefill-time-per-token`, so peak prefill throughput
+is just the reciprocal of the per-token cost:
 
 ```
 peakPrefillThroughput  =  1 / prefill-time-per-token
 ```
 
-`1 / 15926 s = 62.8 µs`. **Set `prefill-time-per-token: 63µs` on the simulators and the
-guide's calibrated constant becomes correct for this lab** — the cluster is then
-modelling an H100's prefill rate, and the number is derived rather than borrowed. This
-depends on Part 3 §1.
+Adopt the upstream `8b-h100-balanced-per-token` profile from Part 3 §1 — which sets
+`prefill-time-per-token: 250us` — and the value follows:
+
+```
+1 / 250µs  =  4000 tokens/s
+```
+
+**So `peakPrefillThroughput: 4000`, derived from the profile this cluster is actually
+running**, rather than the guide's `15926`, which was calibrated on Qwen3-32B / H100 /
+TP=2 and describes a different machine. This depends on Part 3 §1 being done first; until
+then the parameter has no defensible value, because prefill costs nothing.
 
 ## Risks
 
@@ -328,40 +336,71 @@ storage layer or a CNI swap from blocking the llm-d work. They stay out.
 
 Ranked by what this cluster can actually prove, not by what sounds impressive.
 
-## 1. Give the simulator a latency model — the highest-value item here
+## 1. Give the simulator a latency model — CONFIRMED, and the highest-value item here
 
-**Check this first, because it may invalidate every latency number in the repo.**
+**This is settled, from source, at the exact version the lab runs.** It was written as a
+hypothesis in the first draft of this plan; it is now a finding.
 
-`llm-d-inference-sim`'s `NewConfig()` initialises `Latencies` with only
-`TimeFactorUnderLoad: 1.0`. Every other field — `time-to-first-token`,
+`newConfig()` in `pkg/common/config.go` at **v0.11.2** sets exactly one latency-related
+field, `TimeFactorUnderLoad: 1.0`. Every other one — `time-to-first-token`,
 `inter-token-latency`, `prefill-overhead`, `prefill-time-per-token`,
-`kv-cache-transfer-latency`, `kv-cache-transfer-time-per-token` — appears to default to
-**zero**, and this lab sets none of them.
+`kv-cache-transfer-latency`, `kv-cache-transfer-time-per-token` — is absent and therefore
+**zero**. `validate()` only bounds-checks them (`cannot be negative`); it never assigns a
+default. The lab's manifests set none of them.
 
-If that holds on v0.11.2, then:
+So the model servers cost **zero simulated time**, and the consequences are not
+speculative:
 
-- The model servers contribute **no** simulated time. Every millisecond measured in the
-  A/B is gateway + EPP + sidecar + network.
-- A cache hit saves nothing **because a miss costs nothing**.
-- P/D's KV transfer is free, so the disaggregation experiment measured its orchestration
-  and none of its economics.
+- Every millisecond in the A/B is gateway + EPP + sidecar + network. The model servers
+  contribute nothing.
+- **A cache hit saves nothing because a miss costs nothing.** The simulator's own prefill
+  formula is `prefill_time = prefill-overhead + (n − n_cached) × prefill-time-per-token`.
+  `n_cached` is in the formula — a cache hit is *meant* to subtract prefill time. At
+  `prefill-time-per-token: 0` it subtracts zero. Run 2's latency columns could not have
+  shown a caching benefit whatever the routing did.
+- P/D's KV transfer is free, so the disaggregation work measured its orchestration and
+  none of its economics.
 - Arm B's 2.5× latency win is arm A's scheduling overhead against a backend of zero
   cost — the worst possible case for arm A, and not a property of real serving.
 
-Verify before acting — the simulator prints its configuration at startup:
+There is a second, quieter miss: `latency-calculator` is never set either, which puts the
+lab on the path the simulator's docs label **"unset / not recommended"**, kept only for
+backward compatibility. The `per-token` calculator is documented for precisely this lab's
+purpose — *"use when routing or scheduling experiments require latency to vary with
+prompt size."*
 
-```bash
-kubectl -n llm-d logs deploy/sim-prefill -c sim | head -40
+**The fix ships with the simulator.** `manifests/latency-profiles/` carries calibrated
+profiles, so the values are adopted rather than invented:
+
+```yaml
+# 8b-h100-balanced-per-token.yaml, upstream
+latency-calculator: per-token
+inter-token-latency: 12ms
+inter-token-latency-std-dev: 2ms
+prefill-overhead: 30ms
+prefill-time-per-token: 250us
+prefill-time-std-dev: 5ms
+kv-cache-transfer-time-per-token: 3us
+kv-cache-transfer-time-std-dev: 200us
+time-factor-under-load: 2.0
 ```
 
-Then set them from published vLLM figures and re-run. This converts the repo's stated
-limitation — *"what it cannot prove: what a cache hit is worth in wall-clock seconds"* —
-from a permanent caveat into a modelled one, with the model's parameters written down
-and honest. The lab could then say: *at these documented prefill costs, a cache hit is
-worth N ms, and here is where the scheduler's 95 µs stops paying for itself.*
+This converts the repo's standing limitation — *"what it cannot prove: what a cache hit
+is worth in wall-clock seconds"* — from a permanent caveat into a modelled one whose
+parameters are written down and attributable. The lab could then say: *at an 8B-on-H100
+prefill cost, a cache hit is worth N ms, and here is the load at which the scheduler's
+95 µs stops paying for itself.*
 
-If the check shows non-zero defaults, the README's latency paragraph is already correct
-and this item costs nothing but the check.
+**Two corrections this forces in the repo**, both to text that is currently public:
+
+1. `README.md` says *"a simulated prefill is nearly free."* It is exactly free, by
+   default, because the parameter was never set. Reword before anyone reads it.
+2. `bench/README.md` reasons about latency as *"the simulator models prefill time rather
+   than performing it — so a cache hit saves simulated work."* It models it as zero, so
+   no work is saved. The conclusion drawn there was right for the wrong reason.
+
+Re-run run 2 after adopting a profile. The hit-ratio result stands — that measurement
+never depended on latency — but the latency columns need replacing rather than amending.
 
 ## 2. The cache-size sweep — turn the run-1 null result into a curve
 
@@ -443,7 +482,7 @@ latency to predict.
 
 | | Item | Why here |
 |---|---|---|
-| 1 | **Part 3 §1** — check the simulator's latency defaults | One `kubectl logs`. If they are zero it reframes everything below, and the README needs a correction. |
+| 1 | **Part 3 §1** — adopt a simulator latency profile | The check is done: the defaults **are** zero. This reframes everything below, unblocks A4's `peakPrefillThroughput`, and forces two corrections to public text. |
 | 2 | **Part 1, A0–A3** — precise prefix-cache routing | The ask. Self-contained; the model-server side is already done. |
 | 3 | **Part 3 §3** — kill the EPP under load | Shares A2's restart harness. Strongest result per hour spent. |
 | 4 | **Part 3 §2** — cache-size sweep | Cheap, and it finally graphs the lab's most interesting finding. |
