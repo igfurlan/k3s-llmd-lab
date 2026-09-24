@@ -534,3 +534,69 @@ Both readings point the same way — prefill's load signals are too brief to
 differentiate pods — and the test is the same either way: add
 `kv-cache-utilization-scorer` to the prefill profile and see whether prefill
 starts using its third pod.
+
+### queue-scorer's signal, confirmed
+
+`WaitingQueueSize` across the concurrency-24 runs, from the EPP's own scoring
+debug:
+
+```
+2223  "WaitingQueueSize":0
+  83  "WaitingQueueSize":1        368  "WaitingQueueSize":2
+ 717  "WaitingQueueSize":3        695  "WaitingQueueSize":4
+ 276  "WaitingQueueSize":5         72  "WaitingQueueSize":6
+  12  "WaitingQueueSize":7
+```
+
+Queues up to seven deep, with roughly half of all samples non-zero. At
+concurrency 4 this field was 0 on every pod, every time. The narrowed claim
+holds: **`queue-scorer` is a constant below saturation and an input above it.**
+
+### Adding kv-cache-utilization-scorer to prefill: the hypothesis held, the fix did not
+
+Same 3:8 point, one plugin added to the prefill profile, everything else fixed:
+
+| | without kv-util | with kv-util at weight 2 |
+|---|---|---|
+| prefill pods used | 0 / 87,194 / 90,698 — **2 of 3** | 59,418 / 27,823 / 90,651 — **3 of 3** |
+| **busiest pod's share** | **50.98%** | **50.96%** |
+| Hit ratio | 83.86% | 83.92% |
+| p50 | 848 ms | 938 ms |
+| p90 | 1515 ms | 1618 ms |
+| p99 | 2271 ms | 2901 ms |
+| mean | 931 ms | 1012 ms |
+
+**The hypothesis was right: prefill was missing a load signal, not misweighted.**
+Adding the scorer put all three pods to work for the first time in any run.
+
+**It did not help.** The busiest pod's share is unchanged at 51%. The third pod
+took work from the *second* pod, not from the bottleneck, so peak load is
+identical and every latency percentile is worse.
+
+#### Why: the two scorers are antagonistic when memory is scarce
+
+The caches here are 16 blocks *deliberately*, sized to force eviction — see the
+Design section. So **a pod holding a useful warm cache is by construction a pod
+near capacity.** `kv-cache-utilization-scorer` exists to steer away from full
+pods, so it penalises precisely the pods `prefix-cache-scorer` is trying to
+select. The two plugins pull in opposite directions exactly when caching
+matters most.
+
+The per-pod hit ratios show it: 86.7% and 87.4% on the two lightly-loaded pods
+against 83.5% on the hot one, while the aggregate stays pinned at 83.9%. Traffic
+is being pushed toward cold pods, which then warm and score well individually,
+with no aggregate gain.
+
+This is a tuning observation that should generalise beyond this lab: **on any
+deployment where KV memory is the binding constraint, cache-utilisation scoring
+and prefix-affinity scoring are in tension**, and adding the former to a profile
+will spread load without necessarily improving anything.
+
+#### Confidence
+
+The categorical result — 2 pods to 3 — is a step change and is believable at
+n=1. **The latency regression is not.** Single-run variance in this harness has
+been large: the concurrency-4 sweep produced p50 values from 310 ms to 426 ms
+across configurations later shown to be making identical routing decisions. A
+10% p50 delta sits inside that. Repeat both points before treating the latency
+column as a result.
