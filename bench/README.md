@@ -600,3 +600,62 @@ been large: the concurrency-4 sweep produced p50 values from 310 ms to 426 ms
 across configurations later shown to be making identical routing decisions. A
 10% p50 delta sits inside that. Repeat both points before treating the latency
 column as a result.
+
+### The repeat, which retracts most of the two sections above
+
+The 3:8 point was re-run with no change whatsoever, to separate signal from
+noise. Every concurrency-24 run, in order:
+
+| config | Hit ratio | p50 | p90 | p99 | mean | prefill split | busiest pod |
+|---|---|---|---|---|---|---|---|
+| 3:1 | 83.79% | 964 | 1600 | 2283 | 1028 | 0 / 0 / 177,892 | **100%** |
+| 3:3 | 83.95% | 888 | 1506 | 2008 | 953 | 89,325 / 0 / 88,567 | 50.2% |
+| 3:8 **(a)** | 83.86% | 848 | 1515 | 2271 | 931 | 0 / 87,194 / 90,698 | 51.0% |
+| 3:8 + kv-util | 83.92% | 938 | 1618 | 2901 | 1012 | 59,418 / 27,823 / 90,651 | 51.0% |
+| 3:8 **(b)** | 83.88% | 932 | 1622 | 2055 | 1003 | 57,867 / 60,072 / 59,953 | **33.8%** |
+
+**The two 3:8 rows are the same configuration.** One produced two pods at 51%,
+the other three pods at 33.8% — the most even distribution of any run — and
+p50 differed by 84 ms. Nothing was changed between them.
+
+#### What this retracts
+
+**The kv-cache-utilization-scorer finding is withdrawn.** It was credited with
+making prefill use all three pods. The same profile *without* it did the same
+thing on a repeat, so the plugin was not the cause. Its latency "regression"
+(848 → 938 ms) is likewise noise: the honest comparison is 932 → 938 ms.
+
+**The "raise queue-scorer, 12% better p50" recommendation is withdrawn.** It
+rested on 964 → 888 → 848 looking monotonic across single samples. With 3:8's
+two samples at 848 and 932, the 3:1 sample at 964 cannot be distinguished from
+either. The trend was an artifact of n=1.
+
+**Every pod-distribution claim in this document that compares runs is
+unreliable**, including run 3's, since the distribution varies this much with
+nothing changed.
+
+#### What survives
+
+1. **The hit ratio does not move.** Five configurations at concurrency 24, all
+   between 83.79% and 83.95% — a range of 0.16 points. Adding a plugin and
+   changing the ratio 8x did nothing to cache locality. This is measured
+   repeatedly and it is the finding.
+2. **`WaitingQueueSize` reaches 7 at concurrency 24 and is 0 at concurrency 4.**
+   That comes from the EPP's logs rather than from a benchmark comparison, so
+   the repeat does not touch it.
+3. **This benchmark cannot measure load distribution at n=1.** Which is itself
+   worth knowing, and is why the table above exists.
+
+#### The methodological lesson
+
+Arm B reproducing bit-identically between run 2 and run 3 set an expectation
+that this harness is deterministic. It is — for the *round-robin* arm, where
+kube-proxy walks a fixed pod list. The EPP arm is not: every cache starts cold,
+every prefix score starts at 0, and the first requests break ties arbitrarily.
+That decision compounds, and it is the largest single influence on where traffic
+lands for the rest of the run.
+
+Three days of conclusions were drawn from single runs of the EPP arm before this
+was checked. **Any future claim about distribution or latency here needs at
+least three runs per point**; only the hit ratio has earned the right to be
+quoted from one.
