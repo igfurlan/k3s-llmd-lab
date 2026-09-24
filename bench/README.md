@@ -687,10 +687,12 @@ which until now was asserted from source and is now measured.
 hit a warm cache. That is not a restart-survival failure; it is a routing failure, and the
 precondition check caught it instead of scoring it.
 
-The cause is a socket that never opens: `llm-d-inference-sim` v0.11.2 calls `Dial` on its
-KV-events publisher where it should call `Listen`, so nothing binds 5556 and no event ever
-reaches the router. Full evidence, including the port probe and the upstream fix that is
-written but unreleased, in
+The cause is a socket that nobody ever opens. `llm-d-inference-sim` v0.11.2 **dials** from
+its KV-events publisher — documented behaviour, not a defect — while llm-d-router's
+`precise-prefix-cache-producer` with `discoverPods` **also dials**, into each pod. Two
+dialers, no listener, so 5556 is closed and no event ever reaches the router. Full
+evidence, including the port probe and the bind-first change on the simulator's `main`
+that is not in any release, in
 [epp-scheduling.md](../docs/epp-scheduling.md#why-precise-routing-cannot-work-against-the-released-simulator).
 
 ### The check that made the difference

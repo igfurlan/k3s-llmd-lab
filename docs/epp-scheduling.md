@@ -499,36 +499,52 @@ And a port probe from the `render` pod against a **live** prefill pod:
 pod IPs: the publisher socket is simply not open, on a healthy pod, after hundreds of
 requests had already stored blocks in its cache.
 
-### The cause, in one word
+### The cause: two dialers and no listener
 
-`llm-d-inference-sim` v0.11.2, `pkg/common/publisher.go`:
+This is **not** a bug in the simulator against its own specification. Its documentation is
+explicit, in `docs/kv-cache.md`:
+
+| parameter | default | description |
+|---|---|---|
+| `zmq-endpoint` | `tcp://127.0.0.1:5557` | ZMQ address to publish events **(the simulator dials this address)** |
+| `kv-events-replay-endpoint` | `""` | ZMQ ROUTER address to **bind** for KV events replay requests |
+
+**The publisher is documented to dial and the replayer to bind**, which is exactly the
+behaviour observed: 5559 open, 5556 closed. The code matches the docs:
 
 ```go
-// NewPublisher creates a new ZMQ publisher.
-// endpoint is the ZMQ address to bind to (e.g., "tcp://*:5557").
+// llm-d-inference-sim v0.11.2, pkg/common/publisher.go
 func NewPublisher(ctx context.Context, endpoint string) (*Publisher, error) {
 	socket := zmq4.NewPub(ctx, ...)
-
 	go func() {
-		err := socket.Dial(endpoint)        // <-- Dial, not Listen
+		err := socket.Dial(endpoint)
 		...
 	}()
 ```
 
-**The doc comment says bind; the code dials.** `tcp://*:5556` is a bind address — `*` is
-not a host anything can connect to — so the dial can never succeed, and it retries
-silently forever (`WithDialerMaxRetries(-1)`, `WithDialerRetry(time.Second)`).
+(The function's own doc comment says "the ZMQ address to bind to", which contradicts the
+reference docs and the code — but that is a stale comment, not the contract.)
 
-Meanwhile llm-d-router's `precise-prefix-cache-producer`, with
-`kvEventsConfig.discoverPods: true`, **dials each pod** on `podDiscoveryConfig.socketPort`.
+The default `tcp://127.0.0.1:5557` makes the intent clear: a **local** subscriber binds
+that port and the simulator dials out to it. A broker-style topology.
 
-So both sides dial and neither listens. The replay socket in `kv_events_replayer.go` does
-`Listen` correctly, which is why 5559 is open and 5556 is not — and why the deployment
-looks configured correctly right up until you probe the port.
+**llm-d-router expects the opposite.** `precise-prefix-cache-producer` with
+`kvEventsConfig.discoverPods: true` discovers each model-server pod and **dials it** on
+`podDiscoveryConfig.socketPort`. That only works against a publisher that binds — which is
+what vLLM does, with `KV_EVENTS_ENDPOINT=tcp://*:5556`.
 
-### It is fixed upstream, and not released
+So: **both sides dial, nobody listens, and no event is ever exchanged.** This is an
+integration incompatibility between two components' socket conventions, not a defect in
+either one taken alone.
 
-`pkg/common/publisher.go` on `main` tries the right call first:
+Setting `--zmq-endpoint tcp://*:5556` — copied from llm-d's vLLM guide — makes it worse
+rather than better, because `*` is not a host that can be dialled at all, so the retry
+loop can never succeed even if something were listening.
+
+### main has moved to bind-first, and it is not released
+
+`pkg/common/publisher.go` on `main` now attempts to bind first, and only dials if that
+fails:
 
 ```go
 if err := socket.Listen(endpoint); err != nil {
@@ -536,8 +552,12 @@ if err := socket.Listen(endpoint); err != nil {
         err := socket.Dial(endpoint)     // fallback
 ```
 
-No tag carries it. `v0.11.2` is the newest tag, and `latest` is the same image —
-both `sha256:32144df7...`.
+That change accommodates both conventions — a publisher that binds for subscribers that
+dial it, falling back to the old dial-out behaviour — which is what llm-d-router's pod
+discovery needs.
+
+**No released tag carries it.** `v0.11.2` is the newest tag, and `latest` resolves to the
+same image: both `sha256:32144df791330a0006b747edfdf2b114a0fe728e023a9d1b3463eeb48d32abb9`.
 
 ### What this means for this lab
 
