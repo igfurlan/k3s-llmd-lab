@@ -383,3 +383,79 @@ the EPP tokenizes through the chat template while the simulator tokenizes what i
 and the router counts *stored* blocks where the server counts *matched* ones. Neither is
 wrong; they answer different questions. A dashboard that plots them as if they were the same
 quantity would be.
+
+---
+
+## Precise routing reaches the scorer, and cannot reach the P/D decider
+
+Configuring `precise-prefix-cache-producer` and binding `prefix-cache-scorer` to it
+works — six ZMQ subscribers come up, one per model server pod, and the scorer routes on
+what the servers actually hold. But the EPP also logs this:
+
+```
+"msg":"auto-created default producer"
+"producer":"approx-prefix-cache-producer/approx-prefix-cache-producer"
+"dataKey":"PrefixCacheMatchInfoDataKey/approx-prefix-cache-producer"
+"consumer":"disagg-profile-handler"
+```
+
+The consumer is the **P/D machinery**, not the scorer. `disagg-profile-handler` and the
+`prefix-based-pd-decider` it delegates to both read `PrefixCacheMatchInfo`, nothing bound
+them to the precise producer, and the data layer manufactured an approximate one to feed
+them.
+
+**This is not a misconfiguration. There is no way to bind them**, at v0.10.0.
+`PrefixBasedPDDeciderConfig` accepts two fields and neither is a producer:
+
+```go
+type PrefixBasedPDDeciderConfig struct {
+	NonCachedTokens int `json:"nonCachedTokens"`
+	PromptTokens    int `json:"promptTokens"`
+}
+```
+
+`DisaggProfileHandlerParameters` takes `stageOrder`, `profiles` and `deciders`, and no
+producer either. Only `prefix-cache-scorer` exposes `prefixMatchInfoProducerName`.
+
+The default is welded in at the data key itself:
+
+```go
+var PrefixCacheMatchInfoDataKey = plugin.NewDataKey(
+    "PrefixCacheMatchInfoDataKey", approxprefixconstants.ApproxPrefixCachePluginType)
+```
+
+and the registry that resolves it is a package-level variable, populated at plugin
+registration and passed to `CreateMissingDataProducers` from `runner.go` — not reachable
+from configuration. Upstream's own README for the plugin says so plainly: the decider's
+`PrefixCacheMatchInfo` comes *"from `approx-prefix-cache-producer`"*.
+
+### What this means for the architecture
+
+**With P/D enabled, two different views of the cache exist in one request path.** The
+scorer picks the endpoint from the precise index — what the servers reported over ZMQ.
+The decider then decides whether to split using the approximate index — what the router
+believes it placed. They can disagree, and the decider's arithmetic is the one already
+known to round up:
+
+```
+hitPrefixTokens = CachedBlockCount * BlockSizeTokens
+nonCachedTokens = inputTokens - hitPrefixTokens
+```
+
+That is the calculation which credited 128 cached tokens against a 109-token prompt. It
+is still running on estimates.
+
+So a benchmark of "precise routing" with P/D on is measuring a hybrid, and should be
+labelled as one. To compare estimated against precise as a single variable, **disable
+P/D**: with no `disagg-profile-handler` the only consumer of `PrefixCacheMatchInfo` is
+the scorer, which is bound, and nothing triggers the auto-creation.
+
+That is self-verifying. `approx-prefix-cache-producer` should disappear from the plugin
+census entirely:
+
+```bash
+kubectl -n llm-d logs deploy/sim-pool-epp \
+  | grep -oE '"plugin":"[a-z-]+/[a-z-]+"' | sort | uniq -c
+```
+
+If it is still there, something else is still consuming the data key.
