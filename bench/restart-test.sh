@@ -165,6 +165,7 @@ for t in $(seq 1 "$TRIALS"); do
   P="$(filler "$t")"
 
   cold=$(cached_tokens "$P"); cold="${cold:-0}"
+  sleep 3   # simulator flushes KV events every 1s; give the index time to see the cold request's blocks
   warm=$(cached_tokens "$P"); warm="${warm:-0}"
   printf "   warm-up: cold=%s warm=%s\n" "$cold" "$warm"
 
