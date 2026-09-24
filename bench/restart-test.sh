@@ -38,6 +38,13 @@
 #   a prompt sized to fit, and a precondition check that refuses to score a
 #   trial that did not warm.
 #
+# WHAT THE SIMULATOR IMAGE MUST BE
+#   Precise mode only works against a simulator whose KV events the router can
+#   ingest: the bind fix (PR #668) AND batch sequence numbers that start at 0
+#   (llm-d-inference-sim#736). On v0.11.2 every precise trial is void; on `main`
+#   alone the router drops every batch and precise scores about chance. Check
+#   the running image before reading a precise result. See bench/README.md.
+#
 set -euo pipefail
 
 MODE="${1:?usage: restart-test.sh <approx|precise> [trials]}"

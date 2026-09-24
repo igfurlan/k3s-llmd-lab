@@ -669,10 +669,16 @@ producer's index is built from its own routing history and lives in EPP memory; 
 precise producer replays from each pod's 5559 socket. One prefix per trial, caches
 cleared between trials, P/D off, three candidate pods, restart the EPP only.
 
-| mode | valid trials | retained after restart |
-|---|---|---|
-| **approx** | 5 of 5 | **1 of 5** |
-| **precise** | **0 of 5** | — (no valid trial) |
+| mode | simulator image | valid trials | retained after restart |
+|---|---|---|---|
+| **approx** | v0.11.2 | 5 of 5 | **1 of 5** |
+| **precise** | v0.11.2 | **0 of 5** | — (no valid trial) |
+| **precise** | `main`, sequence numbers from 1 | 4 of 8 | 2 of 4 |
+| **precise** | `main` + sequence numbers from 0 | **5 of 5** | **5 of 5** |
+
+The first two rows are the original run. The last two were added later the same day and
+are explained in [the update below](#update-two-defects-not-one). The approximate arm was
+not re-run: it does not use the simulator's events, so neither fix applies to it.
 
 ### approx: 1 of 5, below chance
 
@@ -694,6 +700,39 @@ dialers, no listener, so 5556 is closed and no event ever reaches the router. Fu
 evidence, including the port probe and the bind-first change on the simulator's `main`
 that is not in any release, in
 [epp-scheduling.md](../docs/epp-scheduling.md#why-precise-routing-cannot-work-against-the-released-simulator).
+
+### Update: two defects, not one
+
+Fixing the socket was necessary and not sufficient. There were two defects in a row.
+
+1. **Transport.** v0.11.2 never binds 5556 (`5556 -> 111`). Fixed on the simulator's `main`
+   by #668. With it, the probe returns 0 and the EPP's subscribers connect.
+2. **Sequence numbers.** The simulator numbers event batches from 1 and vLLM from 0. With a
+   replay socket configured, the router only ingests a stream that starts at 0, so on `main`
+   it drops every batch and the index stays empty. Mechanism, log lines and the upstream
+   issue are in
+   [epp-scheduling.md](../docs/epp-scheduling.md#a-second-defect-behind-the-first-batches-are-numbered-from-1).
+
+The third row of the table above is `main` with defect 1 fixed and defect 2 not: bind works,
+events arrive and are discarded, and precise routing behaves like a router that knows
+nothing. Half the trials were void because the second identical request could not find its
+cache, and of the 4 valid ones, 2 were retained, in line with chance (about 1 in 3). The
+fourth row has both fixed: 5 of 5 valid and 5 of 5 retained, after the EPP's own
+index was wiped, against 1 of 5 for approx. That is the restart-survival claim measured
+directly. **These are small samples**: 5 of 5 against 2 of 8 per attempt is suggestive
+(one-sided Fisher exact p of about 0.016), and the standing rule above still applies, so
+repeat before quoting it.
+
+**Why the script now sleeps 3 seconds between the cold and the warm request.** The simulator
+publishes KV events on a 1-second timer (`docs/kv-cache.md`), so a precise index does not
+know about the first request until up to a second later. Without the wait, the warm request
+routes blind, lands on the right pod only about 1 time in 3, and most trials come out void.
+The approximate producer updates at routing time and is unaffected.
+
+**The experiment needs the fixed image.** On v0.11.2 every precise trial is void; on `main`
+alone the precise arm scores about chance. Check `kubectl -n llm-d get pod -l app=sim -o
+custom-columns=IMAGE:.spec.containers[0].image` before reading anything into a precise
+result.
 
 ### The check that made the difference
 

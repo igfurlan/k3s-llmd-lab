@@ -574,15 +574,90 @@ than all simulators dialing a shared EPP endpoint. The publisher must listen on 
 address in this topology."*
 
 So this was known upstream before we met it. What is missing is a release: **v0.11.2 was
-published 2026-08-31 and the fix merged six days later.**
+published 2026-08-31 and the fix merged six days later.** A release carrying #668 alone
+would still not restore precise routing; see the next subsection.
 
 **No released tag carries it.** `v0.11.2` is the newest tag, and `latest` resolves to the
 same image: both `sha256:32144df791330a0006b747edfdf2b114a0fe728e023a9d1b3463eeb48d32abb9`.
 
+### A second defect, behind the first: batches are numbered from 1
+
+*Added later on 2026-09-24, after building `main`.*
+
+Building the simulator's `main` (`bf3f6a6`, which contains #668) and deploying it fixed the
+transport, exactly as #668 says: every prefill pod logs `"ZMQ publisher bound"` on
+`tcp://*:5556`, the probe returns `5556 -> 0`, and the EPP's subscribers connect. **Scores
+were still 0** — on every request, across two different prompts, with 3-second gaps that
+outlast the simulator's 1-second event flush.
+
+The events arrived and the router threw them away. Each event batch is framed
+`[topic, sequence, payload]`. The simulator numbers batches from **1**
+(`pkg/common/publisher.go`: `seq := atomic.AddUint64(&p.seqNum, 1)`); vLLM numbers them from
+**0** (`self._seq_gen = count()` in `vllm/distributed/kv_events.py`). When the router has a
+replay socket configured for the pod — `replaySocketPort: 5559` here — its subscriber treats
+a first sequence above 0 as *joining mid-stream*, asks for a replay starting at exactly 0,
+and rejects the reply unless the first batch it gets back is 0. The simulator's replay
+buffer starts at 1:
+
+```
+"msg":"Joining mid-stream, requesting full replay","currentSeq":1,"endpoint":"tcp://10.42.1.114:5556"
+"msg":"Replay response is incomplete","attempt":1,"replayed":0,"nextSeq":0,
+  "replayEndpoint":"tcp://10.42.1.114:5559","error":"incomplete replay: expected sequence 0, got 1"
+```
+
+The rejected batch is dropped, and a 30-second cooldown drops the ones after it. The only
+paths that mark a subscriber as having seen a sequence are a first batch numbered 0 or a
+replay that starts at 0, so **no event is ever indexed**. (Without a replay socket the
+router ingests every batch regardless of sequence — `zmq_subscriber.go` in llm-d-router
+v0.10.0, the `replayEndpoint == ""` branch. That configuration was not tested here.)
+
+#### Evidence: one variable changed
+
+Same cluster, same requests, same script; only the simulator image differed.
+
+| | `main` as merged | `main` + one line (start at 0) |
+|---|---|---|
+| Router log `Joining mid-stream` / `incomplete replay` | on every pod that published | none |
+| `prefix-cache-scorer`, identical request repeated | 0 on every pod (6 requests, 2 prompts) | 1 on one pod, the same pod on both repeats (3 requests, 1 prompt) |
+| Restart test, precise | 4 valid of 8 attempted, 2 retained | 5 valid of 5, 5 retained |
+
+The samples are small, so read this as direction and not magnitude.
+
+The change is one line plus test updates. It is proposed upstream in
+[llm-d-inference-sim#736](https://github.com/llm-d/llm-d-inference-sim/issues/736); the branch
+passes the project's CI on a fork
+([`fix/kv-events-seq-starts-at-zero`](https://github.com/igfurlan/llm-d-inference-sim/tree/fix/kv-events-seq-starts-at-zero)).
+The compiled program is the same as the image below, which differs from that branch only in a
+comment line.
+
+#### The image this lab runs
+
+No release carries both fixes, so the manifests pin `localhost/llm-d-inference-sim:pr668-seq0`:
+`main` at `bf3f6a6` plus that one line, built on `k3s-server` and imported into containerd on
+each node that runs a simulator, because there is no shared registry.
+
+```bash
+git clone https://github.com/llm-d/llm-d-inference-sim.git && cd llm-d-inference-sim
+git checkout bf3f6a6
+sed -i 's/seq := atomic.AddUint64(&p.seqNum, 1)$/seq := atomic.AddUint64(\&p.seqNum, 1) - 1/' pkg/common/publisher.go
+sudo podman build -t localhost/llm-d-inference-sim:pr668-seq0 .
+sudo podman save -o /tmp/sim.tar localhost/llm-d-inference-sim:pr668-seq0
+sudo /usr/local/bin/k3s ctr images import /tmp/sim.tar     # then repeat on k3s-agent-1 and -agent-2
+```
+
+Two operational notes from building it. A build capped at 2 GB is OOM-killed while compiling
+`openai-go`; uncapped, it succeeded on the 6 GB server VM. And that VM has no swap, so heavy
+work on it (an uncapped `make test` froze it until it was shut down) starves everything
+else, the control plane included. Build off-peak, and never in parallel with a benchmark.
+
+When a release carries both fixes, delete this section's build steps and pin the release.
+
 ### What this means for this lab
 
 **Precise prefix-cache routing is not achievable here on a released simulator image.** Not
-misconfigured, not unsupported by the payload — the transport never connects.
+misconfigured, not unsupported by the payload — on v0.11.2 the transport never connects. On
+`main` the transport connects and a second defect drops the events; with both fixed, it
+works (previous subsection).
 
 Three things follow:
 
@@ -590,14 +665,15 @@ Three things follow:
    index scores every candidate 0, every candidate ties, and the pick is arbitrary. The
    near-perfectly even prefill spread in that run (33.4 / 33.4 / 33.3) is what an empty
    index looks like, not what precise knowledge looks like.
-2. **The restart test's precise arm is unrunnable** until this is fixed. Its approximate
-   arm is valid and is recorded in `bench/README.md`.
-3. **The payload was never the problem.** The simulator always populates `token_ids` in
-   `BlockStored`, and computes block hashes with `kvblock.TokensToKVBlockKeys` — imported
-   from llm-d-router itself, so both sides run the same hashing code at the same block
-   size against the same real tokenizer. It should match once the socket does. Its
-   `extra_keys` is never populated, but that field carries multimodal identifiers and
-   `cache_salt`, neither of which this workload uses.
+2. **The restart test's precise arm was unrunnable on v0.11.2.** With both fixes it runs;
+   its results, and the approximate arm's, are in `bench/README.md`.
+3. **The payload was never the problem, and that is now confirmed.** The simulator always
+   populates `token_ids` in `BlockStored`, and computes block hashes with
+   `kvblock.TokensToKVBlockKeys` — imported from llm-d-router itself, so both sides run the
+   same hashing code at the same block size against the same real tokenizer. Once events
+   were ingested, a repeated prompt scored non-zero on the pod that served it, so the hashes
+   do agree. Its `extra_keys` is never populated, but that field carries multimodal
+   identifiers and `cache_salt`, neither of which this workload uses.
 
 ### The general lesson, again
 

@@ -42,11 +42,24 @@
 #   BlockStored / BlockRemoved events and indexes what each pod ACTUALLY holds.
 #   Evictions arrive as events; a restarted EPP rebuilds from the replay socket.
 #
-# NOTHING ON THE MODEL-SERVER SIDE CHANGES.
-#   The simulators have published these events since the KV-cache work:
+# THE MODEL-SERVER FLAGS DO NOT CHANGE, BUT THE SIMULATOR IMAGE MUST.
+#   The simulators are configured to publish these events:
 #   --enable-kvcache, --block-size 64, --render-url, --zmq-endpoint tcp://*:5556
 #   and --kv-events-replay-endpoint tcp://*:5559, with both ports named and
-#   exposed. Nothing ever subscribed. This file is the subscriber.
+#   exposed. Nothing subscribed until this file, and when it did, the released
+#   image turned out not to deliver:
+#
+#     - v0.11.2 never binds 5556 (it dials), so the router cannot connect.
+#     - `main` (PR #668) binds, but numbers event batches from 1. With a replay
+#       socket configured, the router only ingests a stream that starts at 0,
+#       so it drops every batch and the index stays empty.
+#
+#   This file needs a simulator with BOTH fixed. The manifests pin
+#   localhost/llm-d-inference-sim:pr668-seq0 for that reason. Confirm which
+#   image is running before reading any precise result:
+#     kubectl -n llm-d get pod -l app=sim -o custom-columns=IMAGE:.spec.containers[0].image
+#   Evidence, the image's build steps and the upstream issue (#736):
+#   docs/epp-scheduling.md, "A second defect, behind the first".
 #
 # SCHEDULING PROFILES ARE UNCHANGED, ON PURPOSE.
 #   Same two profiles, same weights, same filters, same P/D decider. The

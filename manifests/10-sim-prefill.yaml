@@ -49,7 +49,12 @@ spec:
         llm-d.ai/role: prefill
       containers:
         - name: sim
-          image: ghcr.io/llm-d/llm-d-inference-sim:v0.11.2
+          # Not a published image: `main` at bf3f6a6 (which contains PR #668) plus a
+          # one-line change so KV-event sequence numbers start at 0
+          # (llm-d-inference-sim#736). v0.11.2 never binds the KV-events port, and
+          # `main` alone has its events dropped by the router. Built on k3s-server
+          # and imported into containerd on each node; steps in docs/epp-scheduling.md.
+          image: localhost/llm-d-inference-sim:pr668-seq0
           args:
             - "--model"
             - "Qwen/Qwen2.5-1.5B-Instruct"

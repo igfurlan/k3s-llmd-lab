@@ -77,8 +77,12 @@ helm show values oci://ghcr.io/llm-d/charts/llm-d-router-gateway --version v0.10
 
 **2. Are the simulators publishing at all?**
 
-`--enable-kvcache` has been on since the KV-cache work, but nothing has ever subscribed,
-so this has never been verified from the other end.
+`--enable-kvcache` has been on since the KV-cache work, but nothing had ever subscribed
+when this was written. **Since verified, and the answer was no:** on v0.11.2 the publisher
+never binds 5556, and on `main` the events arrive but are dropped because the batches are
+numbered from 1. Precise routing needs the simulator image the manifests now pin,
+`pr668-seq0` (see `docs/epp-scheduling.md`). What a healthy pod logs:
+`"ZMQ publisher bound" endpoint="tcp://*:5556"`.
 
 ```bash
 POD=$(kubectl -n llm-d get pod -l llm-d.ai/role=prefill -o name | head -1)
@@ -517,7 +521,7 @@ latency to predict.
 | | Item | Why here |
 |---|---|---|
 | 1 | **Part 3 §1** — adopt a simulator latency profile | The check is done: the defaults **are** zero. This reframes everything below, unblocks A4's `peakPrefillThroughput`, and forces two corrections to public text. |
-| 2 | **Part 1, A0–A3** — precise prefix-cache routing | The ask. Self-contained; the model-server side is already done. |
+| 2 | **Part 1, A0–A3** — precise prefix-cache routing | The ask. Self-contained, but the model-server side needs a simulator image with #668 and the sequence fix (`pr668-seq0`, built locally; no release has both). |
 | 3 | **Part 3 §3** — kill the EPP under load | Shares A2's restart harness. Strongest result per hour spent. |
 | 4 | **Part 3 §2** — cache-size sweep | Cheap, and it finally graphs the lab's most interesting finding. |
 | 5 | **Part 2** — agentgateway metrics | Small, and every latency panel improves. |
