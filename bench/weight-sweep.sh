@@ -33,6 +33,25 @@
 #   - the per-pod table    does prefill spread across all three?
 #   - p50 vs p90           the gap is queueing; it should close as it spreads
 #
+# CONCURRENCY IS NOT OPTIONAL HERE -- READ THIS BEFORE SWEEPING
+#   The first sweep (3:1, 3:3, 3:8, 1:8) moved the hit ratio by 0.54 points
+#   total, and the load spread non-monotonically: 1 pod, 2, 2, 1. The reason is
+#   that queue-scorer scores on WaitingQueueSize, and at concurrency 4 over
+#   three pods with max-num-seqs 4 the pool has capacity 12 and nothing ever
+#   waits. Every candidate scored exactly 1, so the queue term was a CONSTANT
+#   added to every pod, which cancels in the argmax. Sweeping the weight of a
+#   scorer that returns a constant is sweeping nothing.
+#
+#   For queue-scorer to carry signal, offered concurrency must exceed
+#   replicas x max-num-seqs. With 3 prefill pods at max-num-seqs 4 that means
+#   >12 -- run the sweep at concurrency 16 or 24:
+#
+#     ~/bench/weight-sweep.sh 3 1 480 24 6
+#
+#   Below that threshold this script measures a startup race: all caches begin
+#   cold, every prefix score is 0, the first request breaks a three-way tie
+#   arbitrarily, and whichever pod warms first keeps winning.
+#
 set -euo pipefail
 
 PREFIX_W="${1:?usage: weight-sweep.sh <prefix_weight> <queue_weight> [requests] [conc] [users]}"
@@ -64,18 +83,28 @@ echo "-- rendered prefill profile:"
 sed -n '/- name: prefill/,/- name: decode/p' "$RENDERED" | grep -E 'name: prefill|pluginRef|weight' | sed 's/^/     /'
 
 # 2. apply --------------------------------------------------------------
-echo "-- helm upgrade (this restarts the EPP, clearing its prefix index)"
+echo "-- helm upgrade"
 helm upgrade -i sim-pool "$CHART" --version "$CHART_VERSION" \
   --namespace "$NS" -f "$RENDERED" >/dev/null
+
+# `helm upgrade` returns before the deployment controller has created the new
+# ReplicaSet, so calling `rollout status` straight after can observe the OLD
+# generation, find it complete, and return success instantly. The first version
+# of this script did exactly that, and then read the previous point's logs.
+#
+# An explicit restart makes the new rollout deterministic rather than racing it.
+echo "-- restarting the EPP (clears its prefix index) and waiting for it"
+kubectl -n "$NS" rollout restart deploy/sim-pool-epp >/dev/null
 kubectl -n "$NS" rollout status deploy/sim-pool-epp --timeout=180s
 
-# Confirm the EPP came back with the weights we asked for, rather than
-# assuming a successful rollout means a successful config. This lab has been
-# caught by "configured is not operating" twice.
-echo "-- weights as the EPP parsed them:"
-kubectl -n "$NS" logs deploy/sim-pool-epp --tail=400 2>/dev/null \
-  | grep -i "prefill" | grep -i "weight\|scorer" | tail -5 | sed 's/^/     /' \
-  || echo "     (nothing matched -- check manually with: kubectl -n $NS logs deploy/sim-pool-epp | grep -i profile)"
+# Verify from the ConfigMap the EPP mounts, NOT from its logs: the scoring
+# debug lines only appear once traffic arrives, so a fresh pod has none, and
+# grepping logs either matches nothing or matches the pod before it.
+echo "-- prefill weights as they exist in the mounted config:"
+kubectl -n "$NS" get cm -l "app.kubernetes.io/instance=sim-pool" -o yaml 2>/dev/null \
+  | sed -n '/- name: prefill/,/- name: decode/p' \
+  | grep -E 'name: prefill|pluginRef|weight' | sed 's/^/     /'
+echo "   (expected: prefix-cache-scorer=${PREFIX_W}, queue-scorer=${QUEUE_W})"
 
 # 3. clear the caches ---------------------------------------------------
 echo "-- restarting simulators to clear KV caches"

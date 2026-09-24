@@ -389,3 +389,90 @@ mechanism rather than a documentation-derived one.
 - **Decode dominates.** At `max_tokens: 48` and 15 ms per token, decode is ~90%
   of a request; prefix caching can only ever attack the ~40 ms of prefill. A
   sharper version of this experiment would use longer prompts or shorter outputs.
+
+---
+
+## Weight sweep — the ratio was the wrong hypothesis, 2026-09-24
+
+Run 3 left prefill hot-spotted on one of three pods, and the obvious suspect was
+the prefill profile's `prefix-cache-scorer : queue-scorer` ratio of 3:1. Four
+points, everything else held fixed, EPP and simulator caches cleared between
+each:
+
+| prefix:queue | ratio | Hit ratio | p50 | p90 | p99 | prefill pods used | decode pods used |
+|---|---|---|---|---|---|---|---|
+| **3:1** | 3.000 | 84.83% | 426 ms | 854 ms | 927 ms | **1 of 3** | 2 of 3 |
+| **3:3** | 1.000 | 84.75% | 354 ms | 866 ms | 965 ms | 2 of 3 | 2 of 3 |
+| **3:8** | 0.375 | 85.29% | 370 ms | 853 ms | 938 ms | 2 of 3 | 2 of 3 |
+| **1:8** | 0.125 | 85.04% | 310 ms | 802 ms | 859 ms | **1 of 3** | 3 of 3 |
+
+**The hit ratio moved 0.54 points across a 24× change in the ratio**, and the
+load spread went 1 → 2 → 2 → 1. Non-monotonic, so it is not tracking the
+weights.
+
+### Why: queue-scorer returns a constant
+
+From the EPP's own scoring debug, the three prefill candidates:
+
+```
+prefix-cache-scorer   qmjw8   score 0.5
+queue-scorer          qmjw8   score 1
+queue-scorer          mrg2g   score 1
+queue-scorer          qvsl8   score 1
+```
+
+with pod state:
+
+```
+mrg2g   RunningRequestsSize 0   WaitingQueueSize 0
+qvsl8   RunningRequestsSize 0   WaitingQueueSize 0
+qmjw8   RunningRequestsSize 1   WaitingQueueSize 0
+```
+
+`queue-scorer` scored **1 for every pod**, including the one with a request in
+flight. It scores on `WaitingQueueSize`, and that is 0 everywhere.
+
+So the weighted sum is `prefix_w x prefix_score + queue_w x 1`, and the queue
+term is **the same constant on every candidate** — it cancels in the argmax.
+`prefix-cache-scorer` was the only plugin deciding anything, at every ratio
+tested. The arithmetic checks against the logged final scores: `qmjw8` 2.5 and
+the others 1, which is `3(0.5) + 1(1)` and `3(0) + 1(1)`.
+
+**No queue ever forms because the pool is never loaded.** Concurrency 4, three
+prefill pods, `max-num-seqs 4` — capacity 12 concurrent sequences against 4
+offered. For `queue-scorer` to carry signal, offered concurrency has to exceed
+`replicas x max-num-seqs`.
+
+### What the 1-vs-2 pod variation actually was
+
+A startup race. Every cache begins cold, so every prefix score is 0, the first
+request breaks a three-way tie arbitrarily, and whichever pod warms first keeps
+winning. Sometimes two warm before the loop closes. With n=1 per point and this
+race dominating, **none of the latency differences above are distinguishable
+from noise** and they should not be read as a trend.
+
+### This retracts run 3's stated mechanism
+
+Run 3 concluded the hot spot was `queue-scorer` at weight 1 being unable to
+outvote `prefix-cache-scorer` at weight 3. That is wrong: it is not losing the
+vote, it is not voting. Raising it to 8 changes nothing, because 8 x constant
+is still constant.
+
+What survives from run 3: the latency model created the hot spot, and run 2's
+per-pod spread across all three prefill pods is evidence it was not there
+before. What does not survive is the explanation of *how*.
+
+### The sweep to actually run
+
+Repeat these four points at concurrency above 12, where `queue-scorer` has a
+queue to score:
+
+```bash
+~/bench/weight-sweep.sh 3 1 480 24 6
+~/bench/weight-sweep.sh 3 3 480 24 6
+~/bench/weight-sweep.sh 3 8 480 24 6
+```
+
+If the hit ratio stays flat there too, the ratio genuinely does not matter for
+this workload and the hot spot needs `prefix-cache-affinity-filter` — a filter
+with a real load gate — rather than a reweighting. That is increment A4.
