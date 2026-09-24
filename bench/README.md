@@ -164,6 +164,13 @@ and gets a worse hit ratio for it. That is the whole argument in one line.
 
 #### The cost is unchanged and still real
 
+> **Superseded by run 3.** Everything in this subsection reasons about latency
+> measured against backends that cost nothing, and its central prediction — that
+> the 2.5× would shrink or flip once prefill cost real time — was tested and
+> held. Kept as written because the prediction was right and the record of it is
+> worth more than a tidy edit.
+
+
 Arm A remains ~2.5× slower per request, and still touches prompt tokens twice
 (177,832 ≈ 2 × 88,916) because P/D sends the prompt to prefill and decode looks
 it up as well. Against a simulator that returns in microseconds, a scheduling
@@ -253,3 +260,132 @@ Until then the honest claim from this lab is narrow and defensible: the
 scheduler demonstrably controls *where* requests go, and the plumbing measured
 here works. What that control is worth depends on conditions this hardware
 cannot create.
+
+---
+
+## Run 3 — under a real latency model, 2026-09-24
+
+Identical workload, replicas and cache size to run 2. The only change is that
+both simulators now carry upstream's `small-l40s-edge-per-token` latency profile
+(`prefill-overhead: 20ms`, `prefill-time-per-token: 350us`,
+`inter-token-latency: 15ms`, `kv-cache-transfer-time-per-token: 12us`,
+`time-factor-under-load: 1.5`, `max-num-seqs: 4`) instead of the zero everything
+defaulted to. Routing was **not** changed: this is still the estimating
+`prefix-cache-scorer`.
+
+| | Arm A (prefix-aware + P/D) | Arm B (round-robin) | Δ |
+|---|---|---|---|
+| **Hit ratio** | **84.8%** | 78.4% | **+6.4 pts** |
+| Prompt tokens queried | 177,832 | 88,916 | 2× |
+| Cache hits | 150,848 | 69,696 | |
+| Latency p50 | 426 ms | **373 ms** | +53 ms (1.14×) |
+| Latency p90 | 854 ms | **801 ms** | +53 ms (1.07×) |
+| Latency p99 | 927 ms | **891 ms** | +36 ms (1.04×) |
+| mean | 471 ms | 433 ms | +38 ms |
+
+Against the 86.4% ceiling: arm A captures **98%** of what is achievable, arm B
+**91%**.
+
+### The control arm reproduced exactly
+
+Arm B returned 88,916 tokens queried and 69,696 hits — **bit-identical to run
+2**, across a change that altered every timing in the system. Round-robin over a
+fixed pod set with a deterministic request sequence lands the same requests on
+the same pods in the same order, so its cache behaviour is reproducible. That is
+a stronger validation of this harness than anything run 2 produced.
+
+### Run 2's headline was an artifact, and this corrects it
+
+Run 2 reported that prefix-aware routing *"cost 2.5× the latency"*. It did not.
+That ratio was a fixed scheduling overhead divided by a 5 ms request against
+backends that cost nothing. Amortised against a real ~400 ms request the same
+overhead is **1.14×** — and it buys 6.4 points of hit ratio.
+
+**The sign did not flip, but the magnitude collapsed**, which is what the run 2
+write-up predicted would happen on real hardware. It happened here instead,
+without a GPU, by giving the simulator the latency model it always had a slot
+for.
+
+### The experiment compares two architectures, not one variable
+
+Arm A queried 177,832 tokens against arm B's 88,916 — exactly double, because
+**arm A splits every request** (prefill pod, KV transfer, decode pod) while arm B
+touches one pod. So the comparison is *prefix-aware routing **and** prefill/decode
+disaggregation* against *round-robin with neither*.
+
+Run 2 had the same confound. Nothing cost time, so it never surfaced.
+
+Arm A's +53 ms is therefore an unseparated mix of the KV transfer (~4.4 ms now
+that it costs anything), the extra hop through the routing sidecar and the remote
+prefill call, queueing on a hot prefill pod (below), minus roughly 8 ms of
+genuine caching benefit. **This write-up does not attribute a breakdown, because
+the data does not support one.**
+
+The experiment that would: raise `nonCachedTokens` until requests stop splitting.
+Arm A then becomes prefix-aware routing *without* P/D, and the difference against
+today's arm A is disaggregation's real cost.
+
+### What the latency model exposed: the pool is hot-spotted
+
+Per-pod, arm A:
+
+```
+10.42.1.45   queried 88916 tokens   hit 75648   (85.1%)   <- all of it
+10.42.1.46   queried     0
+10.42.1.47   queried     0
+```
+
+**One prefill pod served every request. Two served nothing.** Decode spread over
+two of three; the third was idle.
+
+The cause is the prefill profile's own weights:
+
+```yaml
+- pluginRef: prefix-cache-scorer
+  weight: 3
+- pluginRef: queue-scorer
+  weight: 1
+```
+
+Once one pod holds the shared system prompt it wins every scoring round, and one
+unit of queue pressure cannot outvote three units of cache affinity. The
+queueing shows in the percentiles: arm A's p90 is almost exactly 2× its p50.
+
+**And this is new.** Run 2 recorded its own prefill distribution —
+*"15,006 to 44,458 tokens across the three prefill pods"* — so all three were
+working, unevenly. Run 3 puts 100% on one. The scorer weights are identical
+between the runs, so the weights alone do not explain it.
+
+What changed is that requests now take time, and that closes a feedback loop
+that was previously open. At zero cost each request finished before the next
+arrived: no queue ever formed, no pod stayed warm enough to dominate, and which
+pod won varied. At ~400 ms and concurrency 4 the requests overlap, so the first
+pod to hold the shared prefix keeps winning, keeps being warm, and keeps
+winning — while `queue-scorer` at weight 1 cannot outvote `prefix-cache-scorer`
+at weight 3 no matter how deep its queue gets.
+
+So the latency model did not merely make an existing cost visible. **It created
+the hot spot**, by making cache affinity self-reinforcing in a way that
+instantaneous requests never allowed.
+
+It also explains the hit ratio rising 82.6% → 84.8% with no routing change:
+concentration maximises cache warmth, because one pod holding everything never
+misses on a prefix a sibling happens to hold. **Concentration helps the hit
+ratio and hurts the tail.** That trade-off was structurally unobservable in this
+lab until this run, and it is the most useful thing run 3 produced.
+
+It is also the concrete argument for increment A4. Upstream's
+`prefix-cache-affinity-filter` exists precisely to break this loop: it falls
+back to the least-loaded pods once the cache-warm set saturates past
+`peakPrefillThroughput`. The lab now has an observed reason to want that
+mechanism rather than a documentation-derived one.
+
+### Two caveats on this run
+
+- **`--max-num-seqs` changed from the default 5 to 4** in the same step, as part
+  of adopting the profile whole. It caps concurrent sequences per pod, so it
+  affects queue depth and therefore what `queue-scorer` sees. Some of the
+  2.2-point hit-ratio move may be queueing rather than latency.
+- **Decode dominates.** At `max_tokens: 48` and 15 ms per token, decode is ~90%
+  of a request; prefix caching can only ever attack the ~40 ms of prefill. A
+  sharper version of this experiment would use longer prompts or shorter outputs.

@@ -13,19 +13,27 @@ measurements that contradicted expectations are written down too.
 
 ## What this lab found
 
-**Prefix-aware routing beat round-robin by 4.2 points on identical traffic — 82.6% against
-78.4% cache hit ratio.**
+**Prefix-aware routing beat round-robin by 6.4 points on identical traffic — 84.8% against
+78.4% cache hit ratio — and cost 14% in latency to do it.**
 Against the theoretical ceiling (86.4%, set by 64-token block granularity) that is capturing
-96% of the achievable versus 91%: round-robin recomputes about a quarter more prompt tokens.
+98% of the achievable versus 91%: round-robin recomputes about a third more prompt tokens.
 [The experiment →](bench/)
 
-**The latency half of that experiment measured nothing, which was found only afterwards.**
-The simulators run with every latency parameter at its default, and the default is zero —
-prefill, decode and KV transfer all cost no time. So a cache hit could not have saved time,
-because a miss costs none, and the 2.5× latency gap was the scheduler's own overhead
-measured against backends that are free. The hit-ratio result above is unaffected: it is a
-claim about where requests go, and it never depended on latency.
-[What replaces it →](docs/next-increments.md)
+**An earlier run of that experiment reported the latency cost as 2.5×, and it was an
+artifact.** Every latency parameter in the simulators was at its default, and the default is
+zero — prefill, decode and KV transfer all cost no time — so a cache hit could not save
+time, because a miss cost none, and the "2.5×" was a fixed scheduling overhead divided by a
+5 ms request. Under a real latency model the same overhead is **1.14×**. The finding was
+found by reading the simulator's source, not by anything the cluster reported.
+[What was wrong and how →](bench/#run-3--under-a-real-latency-model-2026-09-24)
+
+**Giving the backends a cost created a hot spot that did not exist before.** Prefill
+collapsed onto one of three pods — 100% of requests, with two idle — where the previous run
+had spread 15k–44k tokens across all three. Nothing about the routing changed: once requests
+take time and overlap, the first pod to hold the shared prefix stays warm and keeps winning,
+and `queue-scorer` at weight 1 cannot outvote `prefix-cache-scorer` at weight 3 however deep
+its queue grows. **Concentration raises the hit ratio and hurts the tail** — a trade-off this
+lab could not observe at all until the backends cost something.
 
 **The first version of that experiment found nothing, and the reason is the more useful
 half.** Both arms scored 74%, which turned out to be exactly `192/259` — the shared system
