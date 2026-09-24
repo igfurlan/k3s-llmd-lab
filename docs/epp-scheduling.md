@@ -543,18 +543,38 @@ loop can never succeed even if something were listening.
 
 ### main has moved to bind-first, and it is not released
 
-`pkg/common/publisher.go` on `main` now attempts to bind first, and only dials if that
-fails:
+`pkg/common/publisher.go` on `main` chooses bind or dial **from the shape of the endpoint
+string** — it is a branch taken once, not a fallback:
 
 ```go
-if err := socket.Listen(endpoint); err != nil {
-        ...
-        err := socket.Dial(endpoint)     // fallback
+// endpoint is the ZMQ address:
+//   - "tcp://*:<port>": binds (server mode, like vLLM's default)
+//   - "tcp://<ip>:<port>": dials (client mode)
+...
+// Bind if wildcard present, otherwise dial (mirrors vLLM)
+if strings.Contains(endpoint, "*") || strings.Contains(endpoint, "::") ||
+	strings.HasPrefix(endpoint, "inproc://") || strings.HasPrefix(endpoint, "ipc://") {
+	if err := socket.Listen(endpoint); err != nil {
+		return nil, fmt.Errorf("failed to bind ZMQ publisher: %w", err)
+	}
 ```
 
-That change accommodates both conventions — a publisher that binds for subscribers that
-dial it, falling back to the old dial-out behaviour — which is what llm-d-router's pod
-discovery needs.
+So `tcp://*:5556` binds and `tcp://127.0.0.1:5557` still dials. The documented default is
+the dial form, which means bind behaviour only appears when the operator asks for it by
+using a wildcard — and the two paths never fall back to one another.
+
+This arrived as [llm-d-inference-sim#668](https://github.com/llm-d/llm-d-inference-sim/pull/668),
+*"feat: hybrid ZMQ bind/dial"*, merged 2026-09-06, whose description says it was
+**"tested with EPP precise-prefix-cache-producer's `discoverPods: true`"** — exactly this
+configuration. An earlier attempt at the same problem,
+[#611](https://github.com/llm-d/llm-d-inference-sim/pull/611) (`--zmq-bind` as an explicit
+flag), was closed unmerged; its description states the root cause plainly: *"In
+`discoverPods` deployment mode … the EPP connects to each simulator individually rather
+than all simulators dialing a shared EPP endpoint. The publisher must listen on a local
+address in this topology."*
+
+So this was known upstream before we met it. What is missing is a release: **v0.11.2 was
+published 2026-08-31 and the fix merged six days later.**
 
 **No released tag carries it.** `v0.11.2` is the newest tag, and `latest` resolves to the
 same image: both `sha256:32144df791330a0006b747edfdf2b114a0fe728e023a9d1b3463eeb48d32abb9`.
