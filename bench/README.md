@@ -476,3 +476,61 @@ queue to score:
 If the hit ratio stays flat there too, the ratio genuinely does not matter for
 this workload and the hot spot needs `prefix-cache-affinity-filter` — a filter
 with a real load gate — rather than a reweighting. That is increment A4.
+
+### The same sweep at concurrency 24
+
+The sweep above measured nothing because the pool was never loaded. Repeated at
+concurrency 24 against a pool with capacity 12 (3 prefill pods x
+`max-num-seqs 4`), 480 requests per point:
+
+| prefix:queue | Hit ratio | p50 | p90 | p99 | mean | prefill pods | decode pods |
+|---|---|---|---|---|---|---|---|
+| **3:1** | 83.79% | 964 ms | 1600 ms | 2283 ms | 1028 ms | **1 of 3** | 3 of 3 |
+| **3:3** | 83.95% | 888 ms | 1506 ms | 2008 ms | 953 ms | **2 of 3** | 3 of 3 |
+| **3:8** | 83.86% | 848 ms | 1515 ms | 2271 ms | 931 ms | **2 of 3** | 3 of 3 |
+
+**Hit ratio range: 0.16 points** — flatter than the 0.54 at concurrency 4. The
+ratio does not affect cache locality for this workload, at either load level.
+
+**Latency does respond, monotonically**: p50 964 -> 888 -> 848 and mean
+1028 -> 953 -> 931. A **12% p50 improvement at no measurable cost in hit ratio.**
+
+So the earlier conclusion needs narrowing rather than keeping: `queue-scorer`
+returns a constant **below saturation**, which is the condition it was measured
+in. Load the pool past capacity and it carries signal. Both statements are about
+the same plugin; only the second is general.
+
+The practical version, for this workload: **raise `queue-scorer`'s weight.** It
+buys tail latency and costs nothing.
+
+### Prefill never uses all three pods. Decode always does.
+
+Across all six sweep points at both concurrency levels, prefill used one or two
+of its three pods and **never all three**. Decode used all three in every run at
+concurrency 24.
+
+Same cluster, same requests, same replica count. The two profiles differ by
+exactly one plugin:
+
+```yaml
+- name: prefill                     - name: decode
+  - prefill-filter                    - decode-filter
+  - prefix-cache-scorer   weight 3    - prefix-cache-scorer         weight 3
+  - queue-scorer          weight 1    - queue-scorer                weight 2
+                                      - kv-cache-utilization-scorer weight 2
+```
+
+`kv-cache-utilization-scorer` reads `KVCacheUsagePercent`, and the EPP's scoring
+debug shows that field carrying a real value — `0.3125` on a busy pod against
+`0` on idle ones — where `WaitingQueueSize` was 0 on all of them. A signal that
+differentiates, next to one that did not.
+
+**The confound:** decode also holds each request roughly ten times longer
+(~390 ms of token generation against ~40 ms of prefill), so any load signal has
+far more time to register on that side. This may be the scorer or it may be the
+dwell time, and this data cannot separate them.
+
+Both readings point the same way — prefill's load signals are too brief to
+differentiate pods — and the test is the same either way: add
+`kv-cache-utilization-scorer` to the prefill profile and see whether prefill
+starts using its third pod.

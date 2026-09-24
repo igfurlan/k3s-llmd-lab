@@ -75,7 +75,40 @@ echo "   ratio ${PREFIX_W}:${QUEUE_W}   (run 3 baseline was 3:1)"
 echo "=============================================================="
 
 # 1. render -------------------------------------------------------------
-sed -e "s/__PREFIX_W__/${PREFIX_W}/" -e "s/__QUEUE_W__/${QUEUE_W}/" "$TMPL" > "$RENDERED"
+#
+# KVUTIL_W is optional, set as an environment variable rather than a positional
+# argument so the existing call sites keep working:
+#
+#     KVUTIL_W=2 ~/bench/weight-sweep.sh 3 8 480 24 6
+#
+# Unset or 0 leaves the prefill profile exactly as it has been for every run so
+# far. Any positive value adds kv-cache-utilization-scorer to it.
+#
+# WHY THIS KNOB EXISTS
+#   Across six sweep points, prefill never used more than two of its three pods
+#   while decode used all three every time at concurrency 24. The profiles
+#   differ by exactly one plugin -- this one -- and it reads KVCacheUsagePercent,
+#   a field the EPP's debug shows carrying real values (0.3125 vs 0) where
+#   WaitingQueueSize was 0 everywhere. Confounded by decode holding requests
+#   ~10x longer, so this is a test, not a conclusion.
+if [ "${KVUTIL_W:-0}" -gt 0 ] 2>/dev/null; then
+  # Delete the marker and put the two real lines in its place.
+  KV_SED="s|^__KVUTIL_BLOCK__\$|          - pluginRef: kv-cache-utilization-scorer\\n            weight: ${KVUTIL_W}|"
+  echo "-- prefill profile WITH kv-cache-utilization-scorer at weight ${KVUTIL_W}"
+else
+  # Delete the marker line outright. Substituting it with an empty string would
+  # leave a blank line, and stripping blank lines afterwards would edit the
+  # embedded block scalar as a side effect.
+  KV_SED="/^__KVUTIL_BLOCK__\$/d"
+  echo "-- prefill profile without kv-cache-utilization-scorer (set KVUTIL_W to add it)"
+fi
+sed -e "s/__PREFIX_W__/${PREFIX_W}/" \
+    -e "s/__QUEUE_W__/${QUEUE_W}/" \
+    -e "$KV_SED" \
+    "$TMPL" > "$RENDERED"
+if grep -q '__KVUTIL_BLOCK__' "$RENDERED"; then
+  echo "render failed: kv-util marker survived in $RENDERED" >&2; exit 1
+fi
 if grep -q '__PREFIX_W__\|__QUEUE_W__' "$RENDERED"; then
   echo "render failed: placeholders remain in $RENDERED" >&2; exit 1
 fi
