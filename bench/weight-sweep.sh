@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+#
+# Sweep the prefill profile's prefix-cache-scorer : queue-scorer ratio and
+# measure what it does to cache locality and to load spread.
+#
+#   ~/bench/weight-sweep.sh <prefix_weight> <queue_weight> [requests] [conc] [users]
+#
+# WHY THIS EXISTS
+#   Run 3 put 100% of prefill traffic on one of three pods, with two idle, and
+#   its p90 sat at 2x its p50. Nothing about the routing config had changed
+#   since run 2, which had spread 15k-44k tokens across all three -- what
+#   changed was that requests started costing real time, which closed a
+#   feedback loop: the first pod to hold the shared prefix stays warm, keeps
+#   winning, and queue-scorer at weight 1 cannot outvote prefix-cache-scorer at
+#   weight 3 however deep its queue grows.
+#
+#   So the hot spot may be three integers rather than a missing component.
+#   This script is the cheapest test of that, and it runs before the larger
+#   precise-prefix-cache increment because it might make it unnecessary.
+#
+# WHAT IT DOES, IN ORDER
+#   1. renders manifests/epp-sweep-values.yaml.tmpl with the two weights
+#   2. helm upgrade -- which restarts the EPP, clearing its prefix index
+#   3. rollout restart of both simulators -- which clears their KV caches
+#   4. runs ab-bench.sh against the EPP path
+#
+#   Steps 2 and 3 matter: a warm cache or a warm index carried over from the
+#   previous point in the sweep is the easiest way to get a flattering number
+#   for whichever ratio ran second.
+#
+# WHAT TO READ IN THE OUTPUT
+#   - hit ratio            does locality survive a lower ratio?
+#   - the per-pod table    does prefill spread across all three?
+#   - p50 vs p90           the gap is queueing; it should close as it spreads
+#
+set -euo pipefail
+
+PREFIX_W="${1:?usage: weight-sweep.sh <prefix_weight> <queue_weight> [requests] [conc] [users]}"
+QUEUE_W="${2:?usage: weight-sweep.sh <prefix_weight> <queue_weight> [requests] [conc] [users]}"
+REQS="${3:-240}"
+CONC="${4:-4}"
+USERS="${5:-6}"
+
+NS=llm-d
+TMPL="${HOME}/manifests/epp-sweep-values.yaml.tmpl"
+RENDERED="${HOME}/manifests/.epp-sweep-${PREFIX_W}-${QUEUE_W}.yaml"
+CHART="oci://ghcr.io/llm-d/charts/llm-d-router-gateway"
+CHART_VERSION="v0.10.0"
+
+[ -f "$TMPL" ] || { echo "missing template: $TMPL (did you vagrant upload manifests?)" >&2; exit 1; }
+[ -x "${HOME}/bench/ab-bench.sh" ] || chmod +x "${HOME}/bench/ab-bench.sh"
+
+echo "=============================================================="
+echo " WEIGHT SWEEP POINT: prefix-cache-scorer=${PREFIX_W}  queue-scorer=${QUEUE_W}"
+echo "   ratio ${PREFIX_W}:${QUEUE_W}   (run 3 baseline was 3:1)"
+echo "=============================================================="
+
+# 1. render -------------------------------------------------------------
+sed -e "s/__PREFIX_W__/${PREFIX_W}/" -e "s/__QUEUE_W__/${QUEUE_W}/" "$TMPL" > "$RENDERED"
+if grep -q '__PREFIX_W__\|__QUEUE_W__' "$RENDERED"; then
+  echo "render failed: placeholders remain in $RENDERED" >&2; exit 1
+fi
+echo "-- rendered prefill profile:"
+sed -n '/- name: prefill/,/- name: decode/p' "$RENDERED" | grep -E 'name: prefill|pluginRef|weight' | sed 's/^/     /'
+
+# 2. apply --------------------------------------------------------------
+echo "-- helm upgrade (this restarts the EPP, clearing its prefix index)"
+helm upgrade -i sim-pool "$CHART" --version "$CHART_VERSION" \
+  --namespace "$NS" -f "$RENDERED" >/dev/null
+kubectl -n "$NS" rollout status deploy/sim-pool-epp --timeout=180s
+
+# Confirm the EPP came back with the weights we asked for, rather than
+# assuming a successful rollout means a successful config. This lab has been
+# caught by "configured is not operating" twice.
+echo "-- weights as the EPP parsed them:"
+kubectl -n "$NS" logs deploy/sim-pool-epp --tail=400 2>/dev/null \
+  | grep -i "prefill" | grep -i "weight\|scorer" | tail -5 | sed 's/^/     /' \
+  || echo "     (nothing matched -- check manually with: kubectl -n $NS logs deploy/sim-pool-epp | grep -i profile)"
+
+# 3. clear the caches ---------------------------------------------------
+echo "-- restarting simulators to clear KV caches"
+kubectl -n "$NS" rollout restart deploy/sim-prefill deploy/sim-decode >/dev/null
+kubectl -n "$NS" rollout status deploy/sim-prefill --timeout=300s
+kubectl -n "$NS" rollout status deploy/sim-decode  --timeout=300s
+sleep 15
+
+# 4. measure ------------------------------------------------------------
+"${HOME}/bench/ab-bench.sh" /v1/chat/completions "$REQS" "$CONC" "$USERS"
+
+echo
+echo "  ^ point ${PREFIX_W}:${QUEUE_W} -- record hit ratio, the per-pod spread,"
+echo "    and the p50/p90 gap in bench/README.md before running the next point."

@@ -1,0 +1,149 @@
+# TEMPLATE -- not applied directly. Rendered by bench/weight-sweep.sh.
+#
+# This is manifests/epp-pd-values.yaml with exactly two values replaced:
+# the prefill profile's prefix-cache-scorer and queue-scorer weights, as
+# __PREFIX_W__ and __QUEUE_W__. Everything else -- the decode profile, the P/D
+# decider, the filters, the data sources -- is byte-identical, so a sweep moves
+# one ratio and nothing else.
+#
+# WHY THE PREFILL PROFILE AND NOT DECODE
+#   Run 3 hot-spotted on PREFILL: one of three pods took 100% of the traffic
+#   while two sat idle. Decode spread across two of three. The fault being
+#   swept is on the prefill side, so decode stays fixed to keep it out of the
+#   result. See bench/README.md, run 3.
+#
+# WHAT THE RATIO MEANS
+#   Both scorers return a normalised score per candidate pod; the weights are
+#   how those scores are summed. prefix:queue of 3:1 says a warm cache is worth
+#   three times an empty queue -- which is llm-d's default opinion, and which
+#   produced a pool with two idle prefill pods once requests started taking
+#   real time.
+#
+# Helm values for the llm-d-router-gateway chart: the InferencePool and its
+# endpoint picker (EPP).
+#
+#   helm upgrade -i sim-pool oci://ghcr.io/llm-d/charts/llm-d-router-gateway \
+#     --version v0.10.0 --namespace llm-d -f ~/manifests/epp-pd-values.yaml
+#
+# WHAT THE EPP IS
+#   An ext_proc service the gateway calls before it picks a backend. Ordinary
+#   Kubernetes load balancing is round-robin and blind; the EPP scores every
+#   candidate pod on things that matter for LLM serving — whose KV cache already
+#   holds this prefix, how deep each queue is — and names the pod to use.
+#
+# THE P/D PART IS UNTESTED
+#   Every plugin name below was accepted by the EPP on the previous cluster, but
+#   P/D disaggregation stayed OFF, because no decider was configured:
+#
+#     disagg/disagg_profile_handler.go:172
+#       "No deciders.prefill configured, P/D disaggregation disabled"
+#
+#   `deciders.prefill` below is the fix, and confirming it is the open question
+#   of phase 6. Success looks like the EPP's "EPP config after phase two" log
+#   line naming `ProfileHandler: disagg-profile-handler` with both profiles, and
+#   NOT repeating the message above.
+
+router:
+  modelServers:
+    matchLabels:
+      app: sim
+
+  epp:
+    # The EPP is the only component here that must not be starved: it sits in
+    # the request path, and a slow scheduler looks exactly like a slow model.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+    pluginsConfigFile: "pd-plugins.yaml"
+
+    flags:
+      # prefix-based-pd-decider is experimental and refuses to load without this.
+      allow-experimental-plugins: true
+      # The decider logs its arithmetic at V(DEBUG) and nowhere else:
+      #   "Computed non-cached suffix" hitPrefixTokens=.. inputTokens=..
+      #                                nonCachedTokens=.. threshold=..
+      # Without this the split/no-split decision is invisible, and the only
+      # evidence is which pods' counters moved.
+      v: 4
+
+    pluginsCustomConfig:
+      pd-plugins.yaml: |
+        apiVersion: llm-d.ai/v1alpha1
+        kind: EndpointPickerConfig
+        plugins:
+        - type: prefix-based-pd-decider
+          parameters:
+            # NOT "always split" — that was wrong. From the plugin's source
+            # (prefix_based_pd_decider.go, computeNeedsRemotePrefill):
+            #
+            #   hitPrefixTokens = CachedBlockCount * BlockSizeTokens
+            #   nonCachedTokens = inputTokens - hitPrefixTokens
+            #   split           = nonCachedTokens >= threshold
+            #
+            # measured against the CHOSEN DECODE ENDPOINT. So 1 means "split
+            # whenever at least one token of this prompt is not already cached
+            # on the pod that would decode it", and 0 disables the plugin
+            # outright ("Prefix-based PD disabled (NonCachedTokens=0)").
+            #
+            # The economics: remote prefill buys parallelism at the cost of a KV
+            # transfer. When decode can already serve the prompt from cache
+            # there is no prefill work to move, and the transfer would be pure
+            # overhead. The threshold is where you place that trade-off.
+            nonCachedTokens: 1
+        - type: disagg-profile-handler
+          parameters:
+            deciders:
+              prefill: prefix-based-pd-decider
+        - type: prefill-filter
+        - type: decode-filter
+        - type: queue-scorer
+        - type: kv-cache-utilization-scorer
+        - type: prefix-cache-scorer
+        - type: metrics-data-source
+          parameters:
+            scheme: "http"
+            path: "/metrics"
+            insecureSkipVerify: true
+        - type: core-metrics-extractor
+        schedulingProfiles:
+        # Prefill: cache locality dominates. A pod that already holds this
+        # prefix skips the expensive pass entirely, which is worth more than an
+        # evenly balanced queue — hence 3 against 1.
+        - name: prefill
+          plugins:
+          - pluginRef: prefill-filter
+          - pluginRef: prefix-cache-scorer
+            weight: __PREFIX_W__
+          - pluginRef: queue-scorer
+            weight: __QUEUE_W__
+        # Decode: queue depth and cache headroom matter, because the work is
+        # long-lived and bandwidth-bound.
+        #
+        # prefix-cache-scorer was added here after the first A/B run. The
+        # default decode profile is cache-blind, which is defensible when every
+        # split sends the prompt to a prefill pod — but a request the decider
+        # declines to split is prefilled locally by decode, and then locality
+        # matters on this side too. Leaving it out made half the traffic
+        # unroutable on the dimension the experiment was testing.
+        - name: decode
+          plugins:
+          - pluginRef: decode-filter
+          - pluginRef: prefix-cache-scorer
+            weight: 3
+          - pluginRef: queue-scorer
+            weight: 2
+          - pluginRef: kv-cache-utilization-scorer
+            weight: 2
+
+# agentgateway handles the InferencePool natively, so the chart must not deploy
+# a proxy of its own.
+provider:
+  name: none
+
+httpRoute:
+  create: true
+  inferenceGatewayName: inference-gateway
