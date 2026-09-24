@@ -2,117 +2,197 @@
 #
 # Does the router still know where the caches are after it restarts?
 #
-#   ~/bench/restart-test.sh [trials]
+#   ~/bench/restart-test.sh <approx|precise> [trials]
 #
 # THE ONE THING THE APPROXIMATE PRODUCER STRUCTURALLY CANNOT DO
 #   The approximate producer builds its index from its OWN past routing
 #   decisions, and that index lives only in EPP memory. Restart the EPP and it
-#   is gone -- the router has to relearn from live traffic, and until it does it
-#   is guessing.
+#   is gone -- the router relearns from live traffic, and until it does it is
+#   guessing.
 #
 #   The precise producer subscribes to the model servers' ZMQ events and, on
 #   startup, replays buffered events from each pod's replay socket (5559). The
 #   servers still hold the blocks; the router asks them what they have.
 #
-#   So: warm a distinct prefix onto whichever pod the router picks, restart ONLY
-#   the EPP -- never the simulators, whose caches must survive -- and send the
-#   same prefix again. Did it land back on a pod that still holds the blocks?
+#   So: warm ONE prefix, restart ONLY the EPP -- never the simulators, whose
+#   caches must survive -- and send the same prefix again. Did it land back on a
+#   pod that still holds the blocks?
 #
-# WHY THIS IS THE RIGHT TEST AND THE BENCHMARK IS NOT
-#   It is CATEGORICAL. The hit ratio comparison is a couple of points against a
-#   harness whose latency and distribution vary by more than that between
-#   identical runs (see bench/README.md, "The repeat"). This asks a yes/no
-#   question per trial and counts, so noise shows up as a count rather than
-#   hiding inside an average.
+# WHY IT IS CATEGORICAL, AND WHY THAT MATTERS HERE
+#   The hit-ratio comparison is a point or two on a harness whose latency and
+#   pod distribution vary by more than that between identical runs (see
+#   bench/README.md, "The repeat"). This asks a yes/no question per trial and
+#   counts. Noise becomes a count instead of hiding inside an average.
 #
-#   With three prefill pods, a router that knows nothing still lands correctly
-#   about 1 trial in 3 by luck. That is the null hypothesis, and it is why this
-#   runs several trials rather than one.
+#   Null hypothesis, stated: with three candidate pods a router that knows
+#   nothing still lands correctly about one trial in three by luck.
 #
-# WHAT TO EXPECT
-#   approximate  ~1/3 of trials retain cache after the restart (chance)
-#   precise      close to all of them
+# WHAT THE FIRST VERSION OF THIS SCRIPT GOT WRONG
+#   It warmed all N prefixes first, then restarted once. With 16-block caches
+#   (1024 tokens) and ~640-token prompts, two prompts do not fit, so each trial
+#   evicted the one before it and five of six trials reported warm=0 -- the
+#   precondition had failed and the script ran on anyway, "measuring" retention
+#   of caches that were never established.
 #
-# READ THE SCORE, NOT ANY SINGLE TRIAL.
+#   Fixed three ways: one trial at a time with the caches cleared between them,
+#   a prompt sized to fit, and a precondition check that refuses to score a
+#   trial that did not warm.
 #
 set -euo pipefail
 
-TRIALS="${1:-6}"
+MODE="${1:?usage: restart-test.sh <approx|precise> [trials]}"
+TRIALS="${2:-5}"
+case "$MODE" in approx|precise) ;; *) echo "mode must be approx or precise" >&2; exit 1;; esac
+
 NS=llm-d
 GW="${GW:-http://192.168.58.11}"
 MODEL="Qwen/Qwen2.5-1.5B-Instruct"
+TMPL="${HOME}/manifests/epp-nopd-values.yaml.tmpl"
+RENDERED="${HOME}/manifests/.epp-nopd-${MODE}.yaml"
+CHART="oci://ghcr.io/llm-d/charts/llm-d-router-gateway"
+CHART_VERSION="v0.10.0"
 
-# Each trial needs its own prefix, long enough to span whole 64-token blocks --
-# a prefix shorter than the block size cannot be cached at all, which is the
-# mistake bench run 1 made. ~120 words puts this comfortably over 2 blocks.
+[ -f "$TMPL" ] || { echo "missing template: $TMPL" >&2; exit 1; }
+
+# ---------------------------------------------------------------- render ----
+# The two arms differ in exactly one thing: whether a precise producer exists
+# and the scorer is bound to it. The approx arm names no producer at all, so
+# the data layer auto-creates the approximate one -- which is the default
+# behaviour this lab ran for weeks without noticing.
+if [ "$MODE" = precise ]; then
+  PRODUCER_PLUGINS=$(cat <<'P'
+        - type: token-producer
+          parameters:
+            modelName: Qwen/Qwen2.5-1.5B-Instruct
+            vllm:
+              url: "http://render:8082"
+        - type: endpoint-notification-source
+        - type: precise-prefix-cache-producer
+          parameters:
+            tokenProcessorConfig:
+              blockSizeTokens: 64
+            speculativeIndexing: false
+            indexerConfig:
+              kvBlockIndexConfig:
+                enableMetrics: true
+            kvEventsConfig:
+              topicFilter: "kv@"
+              concurrency: 8
+              discoverPods: true
+              podDiscoveryConfig:
+                socketPort: 5556
+                replaySocketPort: 5559
+P
+)
+  SCORER_PARAMS=$(cat <<'P'
+          parameters:
+            prefixMatchInfoProducerName: precise-prefix-cache-producer
+P
+)
+  DATA_LAYER=$(cat <<'P'
+        dataLayer:
+          sources:
+          - pluginRef: endpoint-notification-source
+            extractors:
+            - pluginRef: precise-prefix-cache-producer
+P
+)
+else
+  PRODUCER_PLUGINS=""
+  SCORER_PARAMS=""
+  DATA_LAYER=""
+fi
+
+python_free_render() {
+  awk -v prod="$PRODUCER_PLUGINS" -v sco="$SCORER_PARAMS" -v dl="$DATA_LAYER" '
+    /^__PRODUCER_PLUGINS__$/ { if (prod != "") print prod; next }
+    /^__SCORER_PARAMS__$/    { if (sco  != "") print sco;  next }
+    /^__DATA_LAYER__$/       { if (dl   != "") print dl;   next }
+    { print }
+  ' "$TMPL"
+}
+python_free_render > "$RENDERED"
+if grep -q '__PRODUCER_PLUGINS__\|__SCORER_PARAMS__\|__DATA_LAYER__' "$RENDERED"; then
+  echo "render failed: markers remain in $RENDERED" >&2; exit 1
+fi
+
+echo "=============================================================="
+echo " EPP RESTART TEST -- mode=${MODE}  trials=${TRIALS}"
+echo "=============================================================="
+echo "-- applying no-P/D config and restarting the EPP"
+helm upgrade -i sim-pool "$CHART" --version "$CHART_VERSION" \
+  --namespace "$NS" -f "$RENDERED" >/dev/null
+kubectl -n "$NS" rollout restart deploy/sim-pool-epp >/dev/null
+kubectl -n "$NS" rollout status deploy/sim-pool-epp --timeout=180s >/dev/null
+
+# ------------------------------------------------------------- helpers ----
+# ~300 tokens: five 64-token blocks, so one prompt fits comfortably inside a
+# 16-block cache with room for the chat template. The previous ~640-token
+# prompt did not leave room for anything else.
 filler() {
   local seed="$1" i out=""
-  for i in $(seq 1 120); do
-    out+="topic${seed}word${i} "
-  done
+  for i in $(seq 1 55); do out+="subject${seed}item${i} "; done
   printf '%s' "$out"
 }
 
-# Ask the gateway for a completion and print the cached-token count the server
-# reports back. That number -- not a log line, not a metric -- is the evidence
-# that this prompt hit a warm cache.
 cached_tokens() {
-  local prompt="$1"
   curl -s --max-time 30 "${GW}/v1/chat/completions" \
     -H 'Content-Type: application/json' \
-    -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"${prompt}\"}],\"max_tokens\":4}" \
+    -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"$1\"}],\"max_tokens\":4}" \
     | grep -o '"cached_tokens":[0-9]*' | head -1 | cut -d: -f2
 }
 
-echo "=============================================================="
-echo " EPP RESTART TEST -- ${TRIALS} trials"
-echo "--------------------------------------------------------------"
-echo " Which producer is bound:"
+clear_caches() {
+  kubectl -n "$NS" rollout restart deploy/sim-prefill deploy/sim-decode >/dev/null
+  kubectl -n "$NS" rollout status deploy/sim-prefill --timeout=300s >/dev/null
+  kubectl -n "$NS" rollout status deploy/sim-decode  --timeout=300s >/dev/null
+  sleep 12
+}
+
+echo "-- producers actually running:"
 kubectl -n "$NS" logs deploy/sim-pool-epp 2>/dev/null \
-  | grep -oE '"(precise|approx)-prefix-cache-producer/[a-z-]+"' | sort -u | sed 's/^/   /' || true
-echo "=============================================================="
+  | grep -oE '(precise|approx)-prefix-cache-producer' | sort -u | sed 's/^/     /' || true
+if [ "$MODE" = precise ]; then
+  echo "   (expect precise only -- approx appearing here means something still"
+  echo "    consumes PrefixCacheMatchInfo and the arms are not clean)"
+fi
 
-# Clear the simulators ONCE, before anything. They are never restarted again:
-# the whole test depends on the servers keeping their blocks across the EPP
-# restart. Restarting them here would destroy the thing being measured.
-echo "-- clearing model server caches (once, and only here)"
-kubectl -n "$NS" rollout restart deploy/sim-prefill deploy/sim-decode >/dev/null
-kubectl -n "$NS" rollout status deploy/sim-prefill --timeout=300s >/dev/null
-kubectl -n "$NS" rollout status deploy/sim-decode  --timeout=300s >/dev/null
-sleep 15
-
-declare -a PROMPTS
-echo "-- phase 1: warming ${TRIALS} distinct prefixes"
+VALID=0; RETAINED=0
 for t in $(seq 1 "$TRIALS"); do
+  echo "--------------------------------------------------------------"
+  echo " trial ${t}: clearing caches"
+  clear_caches
   P="$(filler "$t")"
-  PROMPTS[$t]="$P"
-  cold=$(cached_tokens "$P")
-  warm=$(cached_tokens "$P")     # second send: should now be cached somewhere
-  printf "   trial %d: cold=%s  warm=%s\n" "$t" "${cold:-?}" "${warm:-?}"
-done
 
-echo "-- restarting ONLY the EPP (simulator caches stay warm)"
-kubectl -n "$NS" rollout restart deploy/sim-pool-epp >/dev/null
-kubectl -n "$NS" rollout status deploy/sim-pool-epp --timeout=180s >/dev/null
-# Give the precise producer a moment to replay from each pod's 5559 socket.
-sleep 10
+  cold=$(cached_tokens "$P"); cold="${cold:-0}"
+  warm=$(cached_tokens "$P"); warm="${warm:-0}"
+  printf "   warm-up: cold=%s warm=%s\n" "$cold" "$warm"
 
-echo "-- phase 2: same prefixes, first request after the restart"
-RETAINED=0
-for t in $(seq 1 "$TRIALS"); do
-  after=$(cached_tokens "${PROMPTS[$t]}")
-  if [ "${after:-0}" -gt 0 ] 2>/dev/null; then
-    RETAINED=$((RETAINED+1)); verdict="RETAINED"
-  else
-    verdict="lost"
+  # PRECONDITION. A trial that never cached cannot tell us anything about
+  # whether a cache survived, and scoring it anyway is how the first version of
+  # this script produced a meaningless 3/6.
+  if [ "$warm" -le 0 ]; then
+    echo "   VOID -- prefix never cached, trial not scored"
+    continue
   fi
-  printf "   trial %d: cached_tokens=%-6s %s\n" "$t" "${after:-0}" "$verdict"
+  VALID=$((VALID+1))
+
+  kubectl -n "$NS" rollout restart deploy/sim-pool-epp >/dev/null
+  kubectl -n "$NS" rollout status deploy/sim-pool-epp --timeout=180s >/dev/null
+  sleep 10   # let the precise producer replay from each pod's 5559 socket
+
+  after=$(cached_tokens "$P"); after="${after:-0}"
+  if [ "$after" -gt 0 ]; then
+    RETAINED=$((RETAINED+1)); echo "   after restart: cached_tokens=${after}  RETAINED"
+  else
+    echo "   after restart: cached_tokens=0  lost"
+  fi
 done
 
 echo "=============================================================="
-echo " RETAINED ${RETAINED} / ${TRIALS} after the EPP restart"
+echo " mode=${MODE}   RETAINED ${RETAINED} / ${VALID} valid trials  (${TRIALS} attempted)"
 echo
-echo "   ~1/3 is what a router that knows nothing scores by chance,"
-echo "   with three candidate pods. Close to ${TRIALS}/${TRIALS} means the"
-echo "   index survived the restart."
+echo "   Chance is about 1 in 3, with three candidate pods."
+echo "   Run both modes and compare the two scores; a single score"
+echo "   on its own says very little."
 echo "=============================================================="

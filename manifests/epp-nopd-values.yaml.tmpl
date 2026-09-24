@@ -1,0 +1,90 @@
+# TEMPLATE -- not applied directly. Rendered by bench/restart-test.sh.
+#
+# P/D DISABLED, ON PURPOSE. This is the configuration that makes
+# "estimated versus precise" a single variable.
+#
+# WHY P/D HAS TO GO
+#   disagg-profile-handler and prefix-based-pd-decider both consume
+#   PrefixCacheMatchInfo, and NEITHER exposes a parameter naming which producer
+#   it should come from -- see docs/epp-scheduling.md. The data key itself is
+#   constructed with approx-prefix-cache-producer as its default, and the
+#   registry resolving that is a package-level variable, not config. So with P/D
+#   on, the EPP auto-creates an approximate producer for the decider no matter
+#   what the scorer is bound to, and every measurement is a hybrid: precise
+#   routing, estimated split decisions.
+#
+#   Remove the handler and the decider, and the only consumer of
+#   PrefixCacheMatchInfo is prefix-cache-scorer -- which IS bindable. Nothing
+#   triggers the auto-creation.
+#
+#   That is self-verifying. approx-prefix-cache-producer must disappear:
+#
+#     kubectl -n llm-d logs deploy/sim-pool-epp \
+#       | grep -oE '"plugin":"[a-z-]+/[a-z-]+"' | sort | uniq -c
+#
+# WHY prefill-filter SURVIVES WITHOUT P/D
+#   It is a plain label filter on llm-d.ai/role: prefill, so here it means "use
+#   the three agent-1 pods". Two reasons to keep it: the candidate set is
+#   exactly three rather than six, and the decode pods are fronted by the
+#   routing sidecar, which would put a proxy hop in the path of half the
+#   requests and muddy where a reported cached_tokens came from.
+#
+# ONE SCHEDULING PROFILE
+#   Two profiles only make sense with a handler to choose between them. This is
+#   the chart's own default shape, with the default weights.
+
+router:
+  modelServers:
+    matchLabels:
+      app: sim
+
+  epp:
+    # Must stay 1 -- see epp-precise-values.yaml.
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+    pluginsConfigFile: "nopd-plugins.yaml"
+
+    flags:
+      v: 4
+
+    pluginsCustomConfig:
+      nopd-plugins.yaml: |
+        apiVersion: llm-d.ai/v1alpha1
+        kind: EndpointPickerConfig
+        plugins:
+__PRODUCER_PLUGINS__
+        - type: prefill-filter
+        - type: queue-scorer
+        - type: kv-cache-utilization-scorer
+        - type: prefix-cache-scorer
+__SCORER_PARAMS__
+        - type: metrics-data-source
+          parameters:
+            scheme: "http"
+            path: "/metrics"
+            insecureSkipVerify: true
+        - type: core-metrics-extractor
+__DATA_LAYER__
+        schedulingProfiles:
+        - name: default
+          plugins:
+          - pluginRef: prefill-filter
+          - pluginRef: prefix-cache-scorer
+            weight: 3
+          - pluginRef: queue-scorer
+            weight: 2
+          - pluginRef: kv-cache-utilization-scorer
+            weight: 2
+
+provider:
+  name: none
+
+httpRoute:
+  create: true
+  inferenceGatewayName: inference-gateway
