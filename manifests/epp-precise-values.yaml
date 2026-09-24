@@ -3,6 +3,23 @@
 #
 #   helm upgrade -i sim-pool oci://ghcr.io/llm-d/charts/llm-d-router-gateway \
 #     --version v0.10.0 --namespace llm-d -f ~/manifests/epp-precise-values.yaml
+#   kubectl -n llm-d rollout restart deploy/sim-pool-epp    # <-- NOT OPTIONAL
+#   kubectl -n llm-d rollout status  deploy/sim-pool-epp
+#
+# THE RESTART IS NOT OPTIONAL, AND LEAVING IT OUT FAILS SILENTLY.
+#   Everything in this file lands in a ConfigMap, and a ConfigMap change does
+#   not trigger a Deployment rollout. The EPP reads its plugin config once at
+#   startup, so `helm upgrade` alone leaves it running the PREVIOUS config
+#   while `helm history` shows a new revision and `kubectl rollout status`
+#   returns success immediately -- because no new rollout was ever started.
+#
+#   This was hit on first use. The tell is in the plugin census:
+#
+#     kubectl -n llm-d logs deploy/sim-pool-epp \
+#       | grep -oE '"plugin":"[a-z-]+/[a-z-]+"' | sort | uniq -c
+#
+#   `approx-prefix-cache-producer` present and `precise-prefix-cache-producer`
+#   absent means this file is not in effect, whatever helm reported.
 #
 # This is epp-pd-values.yaml with ONE behavioural change, deliberately isolated:
 # where the prefix-cache-scorer gets its picture of each pod's cache from.
