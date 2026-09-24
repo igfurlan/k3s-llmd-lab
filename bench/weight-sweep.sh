@@ -80,7 +80,11 @@ if grep -q '__PREFIX_W__\|__QUEUE_W__' "$RENDERED"; then
   echo "render failed: placeholders remain in $RENDERED" >&2; exit 1
 fi
 echo "-- rendered prefill profile:"
-sed -n '/- name: prefill/,/- name: decode/p' "$RENDERED" | grep -E 'name: prefill|pluginRef|weight' | sed 's/^/     /'
+# `set -e` + `pipefail` + a grep that matches nothing = the script dies here.
+# Every grep in this script that is only there to PRINT something must be
+# protected, or a cosmetic step takes the experiment down with it.
+{ sed -n '/- name: prefill/,/- name: decode/p' "$RENDERED" \
+    | grep -E 'name: prefill|pluginRef|weight' | sed 's/^/     /'; } || true
 
 # 2. apply --------------------------------------------------------------
 echo "-- helm upgrade"
@@ -100,10 +104,26 @@ kubectl -n "$NS" rollout status deploy/sim-pool-epp --timeout=180s
 # Verify from the ConfigMap the EPP mounts, NOT from its logs: the scoring
 # debug lines only appear once traffic arrives, so a fresh pod has none, and
 # grepping logs either matches nothing or matches the pod before it.
+#
+# Pull the config by KEY rather than by label. The chart's label scheme is not
+# something to guess at, and `get cm -o yaml` renders the nested plugin YAML
+# with escaped newlines on one line, which defeats a sed line-range. jsonpath
+# hands back the raw string instead.
+#
+# The whole block is non-fatal: verification must never be able to kill the
+# run it is verifying.
 echo "-- prefill weights as they exist in the mounted config:"
-kubectl -n "$NS" get cm -l "app.kubernetes.io/instance=sim-pool" -o yaml 2>/dev/null \
-  | sed -n '/- name: prefill/,/- name: decode/p' \
-  | grep -E 'name: prefill|pluginRef|weight' | sed 's/^/     /'
+set +e
+EPP_CFG=$(kubectl -n "$NS" get cm -o jsonpath='{range .items[*]}{.data.pd-plugins\.yaml}{end}' 2>/dev/null)
+if [ -n "$EPP_CFG" ]; then
+  printf '%s\n' "$EPP_CFG" \
+    | sed -n '/- name: prefill/,/- name: decode/p' \
+    | grep -E 'name: prefill|pluginRef|weight' | sed 's/^/     /'
+else
+  echo "     (could not read the plugins ConfigMap -- verify by hand with:"
+  echo "      kubectl -n $NS get cm -o jsonpath='{range .items[*]}{.data.pd-plugins\\.yaml}{end}')"
+fi
+set -e
 echo "   (expected: prefix-cache-scorer=${PREFIX_W}, queue-scorer=${QUEUE_W})"
 
 # 3. clear the caches ---------------------------------------------------
