@@ -459,3 +459,112 @@ kubectl -n llm-d logs deploy/sim-pool-epp \
 ```
 
 If it is still there, something else is still consuming the data key.
+
+---
+
+## Why precise routing cannot work against the released simulator
+
+Everything about the precise configuration is correct and loads cleanly: the producer
+instantiates, six ZMQ subscribers are created, the scorer binds to it, and the simulators
+parse `zmq-endpoint: "tcp://*:5556"` with `enable-kvcache: true`. And it routes at random,
+because **no KV-cache event ever arrives.**
+
+### The measurement
+
+`prefix-cache-scorer` returning nothing for any candidate:
+
+```
+endpoint sim-prefill-...-lfsbs   "score":0
+endpoint sim-prefill-...-gtjcm   "score":0
+endpoint sim-prefill-...-pjsdw   "score":0
+```
+
+The EPP, dialling in a permanent retry loop:
+
+```
+"msg":"Failed to connect subscriber socket"
+"endpoint":"tcp://10.42.1.113:5556"
+"error":"zmq4: could not dial ... connect: connection refused"
+```
+
+And a port probe from the `render` pod against a **live** prefill pod:
+
+```
+8000 -> 0      HTTP, serving
+5556 -> 111    REFUSED
+5559 -> 0      replay socket, listening
+```
+
+`10.42.1.113` was `sim-prefill-75d4855c47-gtjcm`, Running at the time. So this is not stale
+pod IPs: the publisher socket is simply not open, on a healthy pod, after hundreds of
+requests had already stored blocks in its cache.
+
+### The cause, in one word
+
+`llm-d-inference-sim` v0.11.2, `pkg/common/publisher.go`:
+
+```go
+// NewPublisher creates a new ZMQ publisher.
+// endpoint is the ZMQ address to bind to (e.g., "tcp://*:5557").
+func NewPublisher(ctx context.Context, endpoint string) (*Publisher, error) {
+	socket := zmq4.NewPub(ctx, ...)
+
+	go func() {
+		err := socket.Dial(endpoint)        // <-- Dial, not Listen
+		...
+	}()
+```
+
+**The doc comment says bind; the code dials.** `tcp://*:5556` is a bind address — `*` is
+not a host anything can connect to — so the dial can never succeed, and it retries
+silently forever (`WithDialerMaxRetries(-1)`, `WithDialerRetry(time.Second)`).
+
+Meanwhile llm-d-router's `precise-prefix-cache-producer`, with
+`kvEventsConfig.discoverPods: true`, **dials each pod** on `podDiscoveryConfig.socketPort`.
+
+So both sides dial and neither listens. The replay socket in `kv_events_replayer.go` does
+`Listen` correctly, which is why 5559 is open and 5556 is not — and why the deployment
+looks configured correctly right up until you probe the port.
+
+### It is fixed upstream, and not released
+
+`pkg/common/publisher.go` on `main` tries the right call first:
+
+```go
+if err := socket.Listen(endpoint); err != nil {
+        ...
+        err := socket.Dial(endpoint)     // fallback
+```
+
+No tag carries it. `v0.11.2` is the newest tag, and `latest` is the same image —
+both `sha256:32144df7...`.
+
+### What this means for this lab
+
+**Precise prefix-cache routing is not achievable here on a released simulator image.** Not
+misconfigured, not unsupported by the payload — the transport never connects.
+
+Three things follow:
+
+1. **The 82.32% hit ratio recorded for "precise routing" was random routing.** An empty
+   index scores every candidate 0, every candidate ties, and the pick is arbitrary. The
+   near-perfectly even prefill spread in that run (33.4 / 33.4 / 33.3) is what an empty
+   index looks like, not what precise knowledge looks like.
+2. **The restart test's precise arm is unrunnable** until this is fixed. Its approximate
+   arm is valid and is recorded in `bench/README.md`.
+3. **The payload was never the problem.** The simulator always populates `token_ids` in
+   `BlockStored`, and computes block hashes with `kvblock.TokensToKVBlockKeys` — imported
+   from llm-d-router itself, so both sides run the same hashing code at the same block
+   size against the same real tokenizer. It should match once the socket does. Its
+   `extra_keys` is never populated, but that field carries multimodal identifiers and
+   `cache_salt`, neither of which this workload uses.
+
+### The general lesson, again
+
+Six subscribers were created and logged. The config parsed. The producer instantiated. The
+scorer bound. Every layer reported success, and the only thing that contradicted the story
+was a TCP port that would not accept a connection.
+
+Same shape as the P/D sidecar that was missing for a day, and the EPP metrics endpoint that
+answered 200 with an empty body. **Find a number that only moves if the work actually
+happened.** Here it was `connect_ex` returning 111.

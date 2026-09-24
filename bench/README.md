@@ -659,3 +659,46 @@ Three days of conclusions were drawn from single runs of the EPP arm before this
 was checked. **Any future claim about distribution or latency here needs at
 least three runs per point**; only the hit ratio has earned the right to be
 quoted from one.
+
+---
+
+## The EPP restart test, 2026-09-24
+
+Does the router still know where the caches are after it restarts? The approximate
+producer's index is built from its own routing history and lives in EPP memory; the
+precise producer replays from each pod's 5559 socket. One prefix per trial, caches
+cleared between trials, P/D off, three candidate pods, restart the EPP only.
+
+| mode | valid trials | retained after restart |
+|---|---|---|
+| **approx** | 5 of 5 | **1 of 5** |
+| **precise** | **0 of 5** | — (no valid trial) |
+
+### approx: 1 of 5, below chance
+
+Every trial warmed cleanly (`cold=0, warm=256`) and only one survived the restart. Chance
+is about 1 in 3 with three candidates, so this sits at or below what a router that knows
+nothing would score. **The approximate index does not survive the process that owns it**,
+which until now was asserted from source and is now measured.
+
+### precise: every trial void, and that is the result
+
+`warm=0` on all five — the *second identical request*, with no restart in between, did not
+hit a warm cache. That is not a restart-survival failure; it is a routing failure, and the
+precondition check caught it instead of scoring it.
+
+The cause is a socket that never opens: `llm-d-inference-sim` v0.11.2 calls `Dial` on its
+KV-events publisher where it should call `Listen`, so nothing binds 5556 and no event ever
+reaches the router. Full evidence, including the port probe and the upstream fix that is
+written but unreleased, in
+[epp-scheduling.md](../docs/epp-scheduling.md#why-precise-routing-cannot-work-against-the-released-simulator).
+
+### The check that made the difference
+
+The first version of this test warmed all six prefixes before restarting once, had no
+precondition check, and reported **3 of 6 retained** — a number that looked like the chance
+baseline and meant nothing, because five of its six trials had never cached anything.
+
+Adding one condition — *refuse to score a trial whose warm-up did not warm* — turned a
+plausible fake result into a correct null plus a root cause. **A benchmark that cannot
+detect its own broken preconditions will report the baseline and look reasonable doing it.**
