@@ -723,6 +723,13 @@ directly. **These are small samples**: 5 of 5 against 2 of 8 per attempt is sugg
 (one-sided Fisher exact p of about 0.016), and the standing rule above still applies, so
 repeat before quoting it.
 
+**What the 5 of 5 does not cover.** Each trial restarts the simulators first, so every pod has
+published only a handful of event batches when the EPP restarts. The router's replay from
+sequence 0 succeeds only while a pod still holds batch 0; past the simulator's 1024-batch
+replay buffer it fails with `expected sequence 0, got N`, and the restarted EPP gets nothing
+from that pod. So this measures restart survival against young pods only; see
+[next-increments.md](../docs/next-increments.md) ("The replay window is bounded").
+
 **Why the script now sleeps 3 seconds between the cold and the warm request.** The simulator
 publishes KV events on a 1-second timer (`docs/kv-cache.md`), so a precise index does not
 know about the first request until up to a second later. Without the wait, the warm request

@@ -642,8 +642,17 @@ git checkout bf3f6a6
 sed -i 's/seq := atomic.AddUint64(&p.seqNum, 1)$/seq := atomic.AddUint64(\&p.seqNum, 1) - 1/' pkg/common/publisher.go
 sudo podman build -t localhost/llm-d-inference-sim:pr668-seq0 .
 sudo podman save -o /tmp/sim.tar localhost/llm-d-inference-sim:pr668-seq0
-sudo /usr/local/bin/k3s ctr images import /tmp/sim.tar     # then repeat on k3s-agent-1 and -agent-2
+sudo /usr/local/bin/k3s ctr images import /tmp/sim.tar
+sudo chmod 644 /tmp/sim.tar && cd /tmp && python3 -m http.server 8080   # Ctrl-C when done
+
+# on k3s-agent-1 and k3s-agent-2:
+curl -fO http://192.168.58.11:8080/sim.tar
+sudo /usr/local/bin/k3s ctr images import sim.tar
 ```
+
+The digest `ctr images ls` reported differed on each of the three nodes for the same tar,
+while `sha256sum` of the tar matched on all three. Compare the tar's checksum, not the
+image digest, to confirm a good copy.
 
 Two operational notes from building it. A build capped at 2 GB is OOM-killed while compiling
 `openai-go`; uncapped, it succeeded on the 6 GB server VM. And that VM has no swap, so heavy

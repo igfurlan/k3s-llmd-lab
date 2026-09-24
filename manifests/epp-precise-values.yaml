@@ -40,7 +40,11 @@
 # WHAT RUNS NOW
 #   `precise-prefix-cache-producer` subscribes to the model servers' own ZMQ
 #   BlockStored / BlockRemoved events and indexes what each pod ACTUALLY holds.
-#   Evictions arrive as events; a restarted EPP rebuilds from the replay socket.
+#   Evictions arrive as events; a restarted EPP rebuilds from the replay socket,
+#   but only while each pod still holds its batch 0 (the replay buffer keeps
+#   the last 1024 batches). Past that, a restarted EPP ingests nothing from
+#   that pod until the pod restarts: docs/next-increments.md, "The replay
+#   window is bounded".
 #
 # THE MODEL-SERVER FLAGS DO NOT CHANGE, BUT THE SIMULATOR IMAGE MUST.
 #   The simulators are configured to publish these events:

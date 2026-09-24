@@ -25,8 +25,18 @@ Two failure modes separate them, and both are reachable in this lab:
 | | Estimated | Precise |
 |---|---|---|
 | A block the server evicted | still believed resident | `BlockRemoved` removes it |
-| Index after an EPP restart | empty — must relearn from live traffic | rebuilt from the replay socket |
+| Index after an EPP restart | empty — must relearn from live traffic | rebuilt from the replay socket, **only while each pod's replay history still reaches back to its first batch** (see below) |
 | A block the router never routed | invisible | seen, if the server published it |
+
+**The replay window is bounded.** A (re)connecting subscriber in llm-d-router v0.10.0 asks
+each pod for a replay starting at sequence 0 and accepts it only if the first batch returned
+is 0. The simulator keeps the last `kv-events-replay-queue-size` batches (default 1024; vLLM
+keeps 10,000). Once a pod has published more than that, a restarted EPP logs
+`incomplete replay: expected sequence 0, got N` and ingests nothing from that pod until the
+pod restarts. This is router-side, affects vLLM the same way, and is what the open
+[llm-d-router#2946](https://github.com/llm-d/llm-d-router/pull/2946) (snapshot recovery)
+addresses. `bench/restart-test.sh` restarts the simulators before every trial, so its pods
+are always inside the window.
 
 The second row is the demo. The third is why the numbers disagree: the router credits
 whole blocks it *believes* it placed, which is how a 109-token prompt earned

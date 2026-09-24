@@ -14,6 +14,11 @@
 #   startup, replays buffered events from each pod's replay socket (5559). The
 #   servers still hold the blocks; the router asks them what they have.
 #
+#   That replay only succeeds while each pod's buffer still reaches back to
+#   batch 0 (default 1024 batches). clear_caches restarts the simulators before
+#   every trial, so the pods here are always young. A result from this script
+#   says nothing about a restart against long-running pods.
+#
 #   So: warm ONE prefix, restart ONLY the EPP -- never the simulators, whose
 #   caches must survive -- and send the same prefix again. Did it land back on a
 #   pod that still holds the blocks?
