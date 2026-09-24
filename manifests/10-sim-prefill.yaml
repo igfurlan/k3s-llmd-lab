@@ -76,6 +76,66 @@ spec:
             # agree with the router's.
             - "--render-url"
             - "http://render:8082"
+            # LATENCY MODEL -- upstream's small-l40s-edge-per-token profile.
+            #
+            # WITHOUT THIS BLOCK EVERY LATENCY PARAMETER IS ZERO. newConfig()
+            # at v0.11.2 sets only time-factor-under-load; validate() bounds-
+            # checks the rest but never assigns a default. So prefill, decode
+            # and KV transfer all cost NO TIME, and the A/B's latency columns
+            # measured scheduling overhead against free backends. A cache hit
+            # could not save time because a miss cost none.
+            #
+            #   prefill_time = prefill-overhead
+            #                + (n - n_cached) * prefill-time-per-token
+            #
+            # n_cached is the cache hit. Multiplied by zero it saves zero --
+            # which is why run 2 could never have shown a caching benefit.
+            #
+            # WHY THE L40S PROFILE AND NOT THE H100 ONE
+            #   Upstream ships three hardware targets. This is the "small
+            #   (1-3B) model on a single L40S at the edge" one, and the model
+            #   here is Qwen2.5-1.5B-Instruct. The 8B/H100 and 70B/8xH100
+            #   profiles describe machines this lab is not pretending to be.
+            #   Upstream's reference table puts a 1-3B model on an L40S at
+            #   80-130ms TTFT and 12-18ms inter-token, which is where these
+            #   values land.
+            #
+            # WHY per-token AND NOT constant
+            #   Upstream documents per-token as the one to use when "routing or
+            #   scheduling experiments require latency to vary with prompt
+            #   size". That is this lab's whole purpose. Leaving
+            #   latency-calculator unset -- as it was -- selects a legacy path
+            #   upstream labels "not recommended".
+            - "--latency-calculator"
+            - "per-token"
+            - "--prefill-overhead"
+            - "20ms"
+            - "--prefill-time-per-token"
+            - "350us"
+            - "--prefill-time-std-dev"
+            - "3ms"
+            - "--inter-token-latency"
+            - "15ms"
+            - "--inter-token-latency-std-dev"
+            - "2ms"
+            # Gives P/D's KV transfer a real cost for the first time: ~4.4ms on
+            # a 370-token prompt. Until now it was free, so the disaggregation
+            # work measured its orchestration and none of its economics. The
+            # profile assumes ~100G Ethernet for cross-node P/D, which is the
+            # honest analogue of prefill and decode living on different nodes.
+            - "--kv-cache-transfer-time-per-token"
+            - "12us"
+            - "--kv-cache-transfer-time-std-dev"
+            - "500us"
+            - "--time-factor-under-load"
+            - "1.5"
+            # Also part of the profile. NOT a latency parameter -- it caps
+            # concurrent sequences per pod, so it changes queue depth and
+            # therefore what queue-scorer sees. Included so the profile is
+            # adopted whole rather than in pieces; drop it if run 3 needs the
+            # latency change isolated from the queueing change.
+            - "--max-num-seqs"
+            - "4"
             # Publishes block lifecycle events. The router discovers pods and
             # subscribes per pod on this port (podDiscoveryConfig.socketPort).
             - "--zmq-endpoint"

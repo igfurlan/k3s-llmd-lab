@@ -32,6 +32,7 @@ kubectl apply -f ~/manifests/20-gateway.yaml
 | `20-gateway.yaml` | The Gateway, implemented by agentgateway |
 | `epp-values.yaml` | Helm values for the InferencePool and endpoint picker — baseline scheduling |
 | `epp-pd-values.yaml` | The same, plus prefill/decode disaggregation. Applied second, on purpose |
+| `epp-precise-values.yaml` | The same again, plus **precise** prefix-cache routing: the EPP indexes the servers' real ZMQ cache events instead of estimating from its own past routing. Applied third — see [next-increments.md](../docs/next-increments.md) |
 
 ## The model name appears in three places
 

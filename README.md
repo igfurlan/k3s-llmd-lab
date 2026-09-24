@@ -14,11 +14,18 @@ measurements that contradicted expectations are written down too.
 ## What this lab found
 
 **Prefix-aware routing beat round-robin by 4.2 points on identical traffic — 82.6% against
-78.4% cache hit ratio — and cost 2.5× the latency to do it.**
+78.4% cache hit ratio.**
 Against the theoretical ceiling (86.4%, set by 64-token block granularity) that is capturing
 96% of the achievable versus 91%: round-robin recomputes about a quarter more prompt tokens.
-The latency cost is real and is a property of *this* hardware, where a simulated prefill is
-nearly free. [The experiment →](bench/)
+[The experiment →](bench/)
+
+**The latency half of that experiment measured nothing, which was found only afterwards.**
+The simulators run with every latency parameter at its default, and the default is zero —
+prefill, decode and KV transfer all cost no time. So a cache hit could not have saved time,
+because a miss costs none, and the 2.5× latency gap was the scheduler's own overhead
+measured against backends that are free. The hit-ratio result above is unaffected: it is a
+claim about where requests go, and it never depended on latency.
+[What replaces it →](docs/next-increments.md)
 
 **The first version of that experiment found nothing, and the reason is the more useful
 half.** Both arms scored 74%, which turned out to be exactly `192/259` — the shared system

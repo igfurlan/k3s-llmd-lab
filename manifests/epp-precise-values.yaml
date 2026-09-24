@@ -1,0 +1,226 @@
+# Helm values for the llm-d-router-gateway chart: P/D disaggregation, plus
+# PRECISE prefix-cache routing.
+#
+#   helm upgrade -i sim-pool oci://ghcr.io/llm-d/charts/llm-d-router-gateway \
+#     --version v0.10.0 --namespace llm-d -f ~/manifests/epp-precise-values.yaml
+#
+# This is epp-pd-values.yaml with ONE behavioural change, deliberately isolated:
+# where the prefix-cache-scorer gets its picture of each pod's cache from.
+#
+# WHAT WAS RUNNING BEFORE
+#   `prefix-cache-scorer` with no `prefixMatchInfoProducerName` silently falls
+#   back to an auto-spawned APPROXIMATE producer. That producer maintains an
+#   index of which prefixes it has SENT where — inferred from its own past
+#   routing decisions. It is an educated guess, and it has two blind spots:
+#
+#     - a block the model server EVICTED is still believed resident
+#     - the index lives in EPP memory, so an EPP restart loses all of it
+#
+#   It is also why the router credited 128 cached tokens against a 109-token
+#   prompt (docs/epp-scheduling.md): it counts whole blocks it believes it
+#   placed, rounding up.
+#
+# WHAT RUNS NOW
+#   `precise-prefix-cache-producer` subscribes to the model servers' own ZMQ
+#   BlockStored / BlockRemoved events and indexes what each pod ACTUALLY holds.
+#   Evictions arrive as events; a restarted EPP rebuilds from the replay socket.
+#
+# NOTHING ON THE MODEL-SERVER SIDE CHANGES.
+#   The simulators have published these events since the KV-cache work:
+#   --enable-kvcache, --block-size 64, --render-url, --zmq-endpoint tcp://*:5556
+#   and --kv-events-replay-endpoint tcp://*:5559, with both ports named and
+#   exposed. Nothing ever subscribed. This file is the subscriber.
+#
+# SCHEDULING PROFILES ARE UNCHANGED, ON PURPOSE.
+#   Same two profiles, same weights, same filters, same P/D decider. The
+#   upstream guide's config (prefix-cache-affinity-filter + token-load-scorer)
+#   would ALSO change the filter topology, the scoring function and the profile
+#   structure — and then a difference in the A/B would be unattributable. That
+#   is increment A4 in docs/next-increments.md, not this one.
+
+router:
+  modelServers:
+    matchLabels:
+      app: sim
+
+  epp:
+    # MUST STAY 1. The chart auto-adds --ha-enable-leader-election above one
+    # replica, which collapses to active-passive; and any in-flight load
+    # accounting is per-process, so two replicas each see half the traffic.
+    replicas: 1
+
+    # The EPP is the only component here that must not be starved: it sits in
+    # the request path, and a slow scheduler looks exactly like a slow model.
+    # The precise index adds work — ZMQ subscribers and a block map — but the
+    # map is tiny here: 6 pods x 16 blocks = 96 blocks total.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+    pluginsConfigFile: "pd-plugins.yaml"
+
+    flags:
+      # prefix-based-pd-decider is experimental and refuses to load without this.
+      allow-experimental-plugins: true
+      # V(DEBUG). Needed for two separate things: the P/D decider's arithmetic
+      # ("Computed non-cached suffix"), and — new here — confirmation that the
+      # scorer bound to the precise producer rather than falling back.
+      v: 4
+
+    pluginsCustomConfig:
+      pd-plugins.yaml: |
+        apiVersion: llm-d.ai/v1alpha1
+        kind: EndpointPickerConfig
+        plugins:
+        # ── NEW: tokenisation ────────────────────────────────────────────
+        # The precise producer consumes a TokenizedPrompt and is a NO-OP
+        # without one, so this must be present and must work.
+        #
+        # The model name must match 05-render.yaml and both simulators'
+        # --model. A mismatch is rejected outright rather than silently
+        # tokenising against the wrong vocabulary — which is the good case;
+        # the bad case would be block hashes that never agree.
+        - type: token-producer
+          parameters:
+            modelName: Qwen/Qwen2.5-1.5B-Instruct
+            vllm:
+              url: "http://render:8082"
+
+        # ── NEW: endpoint lifecycle events ───────────────────────────────
+        # The producer attaches one ZMQ subscriber per model-server pod, and
+        # needs to know when pods appear and disappear. Six subscribers here.
+        - type: endpoint-notification-source
+
+        # ── NEW: the precise index ───────────────────────────────────────
+        - type: precise-prefix-cache-producer
+          parameters:
+            tokenProcessorConfig:
+              # MUST EQUAL the simulators' --block-size 64. Disagree and the
+              # two sides hash different spans of tokens, no block ever
+              # matches, and routing degrades to guesswork with no error.
+              blockSizeTokens: 64
+            # Seeds the index with the routing decision before the server's
+            # event arrives — an estimate layered back on top of the precise
+            # index. OFF for the comparison: this increment is about removing
+            # estimates. Turn it on afterwards as its own variable.
+            speculativeIndexing: false
+            indexerConfig:
+              kvBlockIndexConfig:
+                enableMetrics: true
+            kvEventsConfig:
+              # The simulators publish under kv@<pod-ip>:<port>@<model>.
+              topicFilter: "kv@"
+              concurrency: 8
+              discoverPods: true
+              podDiscoveryConfig:
+                # --zmq-endpoint on both simulator Deployments.
+                socketPort: 5556
+                # --kv-events-replay-endpoint. This is what lets a restarted
+                # EPP rebuild its index from buffered events instead of
+                # relearning from live traffic — the one thing the approximate
+                # producer structurally cannot do.
+                replaySocketPort: 5559
+
+        # ── unchanged from epp-pd-values.yaml ────────────────────────────
+        - type: prefix-based-pd-decider
+          parameters:
+            # hitPrefixTokens = CachedBlockCount * BlockSizeTokens
+            # nonCachedTokens = inputTokens - hitPrefixTokens
+            # split           = nonCachedTokens >= threshold
+            #
+            # 1 means "split whenever at least one token of this prompt is not
+            # already cached on the pod that would decode it". 0 disables the
+            # plugin outright.
+            #
+            # WORTH RE-READING AFTER THIS CHANGE: CachedBlockCount now comes
+            # from the precise index, so the decider's arithmetic gets more
+            # accurate too — the negative suffixes in docs/epp-scheduling.md
+            # should become less common.
+            nonCachedTokens: 1
+        - type: disagg-profile-handler
+          parameters:
+            deciders:
+              prefill: prefix-based-pd-decider
+        - type: prefill-filter
+        - type: decode-filter
+        - type: queue-scorer
+        - type: kv-cache-utilization-scorer
+
+        # ── THE ENTIRE INCREMENT IS THE PARAMETER BELOW ──────────────────
+        - type: prefix-cache-scorer
+          parameters:
+            # Without this line the scorer falls back to the auto-spawned
+            # approximate producer — which is what has been running all along,
+            # silently, with no log line saying so.
+            prefixMatchInfoProducerName: precise-prefix-cache-producer
+
+        - type: metrics-data-source
+          parameters:
+            scheme: "http"
+            path: "/metrics"
+            insecureSkipVerify: true
+        - type: core-metrics-extractor
+
+        # ── NEW: wiring the producer to the event source ─────────────────
+        #
+        # TWO THINGS TO VERIFY HERE BEFORE TRUSTING THIS FILE — both fail
+        # SILENTLY, which is the failure mode this lab keeps meeting.
+        #
+        # 1. THE KEY NAME. Upstream's guide (llm-d main) writes `dataLayer:`.
+        #    The v0.10.0 plugin README writes `data:`. One of them is wrong for
+        #    the chart version pinned above, and a wrong key is simply ignored:
+        #    the producer loads, subscribes to nothing, and the scorer falls
+        #    back to approximate without complaining.
+        #
+        # 2. WHETHER DECLARING THIS BLOCK REPLACES THE CHART'S DEFAULT WIRING.
+        #    Upstream's values file carries the comment "metrics-data-source +
+        #    core-metrics-extractor injected by default" ON this key — and
+        #    upstream does NOT declare those two plugins itself. This file
+        #    does. If an explicit block REPLACES the default wiring rather than
+        #    adding to it, metrics-data-source ends up declared but attached to
+        #    no source, and queue-scorer and kv-cache-utilization-scorer go
+        #    blind. Routing would still work and would still look fine.
+        #
+        #    Check after rollout, before believing any benchmark:
+        #      kubectl -n llm-d logs deploy/sim-pool-epp | grep -i "queue\|kv-cache-util"
+        #    Queue depths and cache utilisation must still be moving. If they
+        #    are not, add metrics-data-source here as a second source with
+        #    core-metrics-extractor as its extractor.
+        dataLayer:
+          sources:
+          - pluginRef: endpoint-notification-source
+            extractors:
+            - pluginRef: precise-prefix-cache-producer
+
+        schedulingProfiles:
+        # UNCHANGED from epp-pd-values.yaml. Prefill: cache locality dominates,
+        # 3 against 1. Decode: locality still matters, because a request the
+        # decider declines to split is prefilled locally by decode.
+        - name: prefill
+          plugins:
+          - pluginRef: prefill-filter
+          - pluginRef: prefix-cache-scorer
+            weight: 3
+          - pluginRef: queue-scorer
+            weight: 1
+        - name: decode
+          plugins:
+          - pluginRef: decode-filter
+          - pluginRef: prefix-cache-scorer
+            weight: 3
+          - pluginRef: queue-scorer
+            weight: 2
+          - pluginRef: kv-cache-utilization-scorer
+            weight: 2
+
+# agentgateway handles the InferencePool natively, so the chart must not deploy
+# a proxy of its own.
+provider:
+  name: none
+
+httpRoute:
+  create: true
+  inferenceGatewayName: inference-gateway

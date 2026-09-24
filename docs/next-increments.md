@@ -250,17 +250,18 @@ is just the reciprocal of the per-token cost:
 peakPrefillThroughput  =  1 / prefill-time-per-token
 ```
 
-Adopt the upstream `8b-h100-balanced-per-token` profile from Part 3 §1 — which sets
-`prefill-time-per-token: 250us` — and the value follows:
+Adopt the upstream `small-l40s-edge-per-token` profile from Part 3 §1 — which sets
+`prefill-time-per-token: 350us` — and the value follows:
 
 ```
-1 / 250µs  =  4000 tokens/s
+1 / 350µs  ≈  2857 tokens/s
 ```
 
-**So `peakPrefillThroughput: 4000`, derived from the profile this cluster is actually
+**So `peakPrefillThroughput: 2857`, derived from the profile this cluster is actually
 running**, rather than the guide's `15926`, which was calibrated on Qwen3-32B / H100 /
-TP=2 and describes a different machine. This depends on Part 3 §1 being done first; until
-then the parameter has no defensible value, because prefill costs nothing.
+TP=2 and describes a different machine — one about 5.6× faster at prefill than the L40S
+this lab is modelling. This depends on Part 3 §1 being done first; until then the
+parameter has no defensible value, because prefill costs nothing.
 
 ## Risks
 
@@ -369,21 +370,54 @@ backward compatibility. The `per-token` calculator is documented for precisely t
 purpose — *"use when routing or scheduling experiments require latency to vary with
 prompt size."*
 
-**The fix ships with the simulator.** `manifests/latency-profiles/` carries calibrated
-profiles, so the values are adopted rather than invented:
+**The fix ships with the simulator.** `manifests/latency-profiles/` carries six calibrated
+profiles — three hardware targets × `constant` and `per-token` — so the values are adopted
+rather than invented.
+
+**Take `small-l40s-edge-per-token`.** It is upstream's *"small (1–3B) model on a single
+L40S at the edge"*, which is the closest match to this lab's Qwen2.5-1.5B-Instruct; the
+8B/H100 and 70B/8×H100 profiles describe machines this lab is not pretending to be.
+`per-token` rather than `constant` because upstream documents it as the one to use when
+*"routing or scheduling experiments require latency to vary with prompt size"* — which is
+this lab's entire purpose.
 
 ```yaml
-# 8b-h100-balanced-per-token.yaml, upstream
+# manifests/latency-profiles/small-l40s-edge-per-token.yaml, upstream v0.11.2
 latency-calculator: per-token
-inter-token-latency: 12ms
+inter-token-latency: 15ms
 inter-token-latency-std-dev: 2ms
-prefill-overhead: 30ms
-prefill-time-per-token: 250us
-prefill-time-std-dev: 5ms
-kv-cache-transfer-time-per-token: 3us
-kv-cache-transfer-time-std-dev: 200us
-time-factor-under-load: 2.0
+prefill-overhead: 20ms
+prefill-time-per-token: 350us
+prefill-time-std-dev: 3ms
+kv-cache-transfer-time-per-token: 12us
+kv-cache-transfer-time-std-dev: 500us
+time-factor-under-load: 1.5
 ```
+
+Upstream's own reference table puts a 1–3B model's TTFT at **80–130 ms on an L40S** and
+inter-token latency at **12–18 ms**, which is where this profile lands.
+
+### What this predicts, before it is run
+
+Run 2 measured ~370-token prompts. Under this profile:
+
+| | Prefill time |
+|---|---|
+| Nothing cached | `20ms + 370 × 350µs` = **149.5 ms** |
+| 5 full blocks cached (320 tokens, the ceiling) | `20ms + 50 × 350µs` = **37.5 ms** |
+
+**So a cache hit is worth about 112 ms**, where today it is worth zero.
+
+The marginal difference between the two arms is the interesting one: 4.2 points of hit
+ratio across a 370-token prompt is ~15.5 more tokens cached per request, or
+`15.5 × 350µs` ≈ **5.4 ms saved per request** — bought with 95 µs of scheduling, a return
+of roughly **57×**.
+
+That is a prediction from the profile's arithmetic, not a result. Run 3 either lands near
+it or it does not, and either outcome is worth writing down. Note also that
+`kv-cache-transfer-time-per-token: 12us` finally gives P/D's KV transfer a real cost —
+about 4.4 ms on a 370-token prompt — which is what makes the `nonCachedTokens` threshold
+sweep in §4 a meaningful experiment rather than a trivially-always-split one.
 
 This converts the repo's standing limitation — *"what it cannot prove: what a cache hit
 is worth in wall-clock seconds"* — from a permanent caveat into a modelled one whose

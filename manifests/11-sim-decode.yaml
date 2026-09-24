@@ -121,6 +121,42 @@ spec:
             # agree with the router's.
             - "--render-url"
             - "http://render:8082"
+            # LATENCY MODEL -- upstream's small-l40s-edge-per-token profile.
+            # Identical to 10-sim-prefill.yaml; the full reasoning is there.
+            #
+            # In short: without this block every latency parameter is zero, so
+            # prefill, decode and KV transfer all cost no time, and a cache hit
+            # saved nothing because a miss cost nothing.
+            #
+            # inter-token-latency matters MORE on this side than on prefill:
+            # decode is the phase that emits tokens one at a time, so this is
+            # the parameter that makes decode behave like the bandwidth-bound
+            # half of the split rather than an instant responder.
+            - "--latency-calculator"
+            - "per-token"
+            - "--prefill-overhead"
+            - "20ms"
+            - "--prefill-time-per-token"
+            - "350us"
+            - "--prefill-time-std-dev"
+            - "3ms"
+            - "--inter-token-latency"
+            - "15ms"
+            - "--inter-token-latency-std-dev"
+            - "2ms"
+            # The cost the routing sidecar in front of this pod pays when it
+            # fetches a prefill: ~4.4ms on a 370-token prompt. This is what
+            # makes nonCachedTokens a real trade-off rather than a free split.
+            - "--kv-cache-transfer-time-per-token"
+            - "12us"
+            - "--kv-cache-transfer-time-std-dev"
+            - "500us"
+            - "--time-factor-under-load"
+            - "1.5"
+            # Part of the profile, and not a latency parameter -- see
+            # 10-sim-prefill.yaml for why it is here and when to drop it.
+            - "--max-num-seqs"
+            - "4"
             # Publishes block lifecycle events. The router discovers pods and
             # subscribes per pod on this port (podDiscoveryConfig.socketPort).
             - "--zmq-endpoint"

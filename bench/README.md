@@ -80,18 +80,34 @@ curl -sG 'http://localhost:9090/api/v1/query' --data-urlencode \
 
 Run it right after each arm, with the window covering only that arm.
 
-## Why a null result is still a result
+## Why the latency numbers below measure nothing
 
-Latency is the less certain half. These are **simulated** model servers, and the
-simulator models prefill time rather than performing it — so a cache hit saves
-simulated work. If the simulator's prefill cost is configured low, arm A can win
-decisively on cache hits and tie on latency.
+Latency was always the less certain half of this experiment. It turned out to be
+worse than uncertain — it was empty, and this was found only after the results
+were published.
 
-**That is a finding, not a failure**, and it is the honest one: this lab can
-demonstrate that prefix-aware routing *changes where requests go and how often
-caches hit*, which is a claim about the scheduler. Proving what those hits are
-worth in seconds needs real weights on real accelerators. Saying so is more
-useful than a latency graph that quietly measures a configured constant.
+These are **simulated** model servers, and the simulator's latency parameters all
+default to **zero**: `prefill-overhead`, `prefill-time-per-token`,
+`inter-token-latency`, `kv-cache-transfer-time-per-token`. Nothing in
+`manifests/` sets any of them, and `latency-calculator` is unset too.
+
+So prefill costs nothing. The simulator's own per-token formula is
+
+```
+prefill_time = prefill-overhead + (n − n_cached) × prefill-time-per-token
+```
+
+and `n_cached` — the cache hit, the entire point of the experiment — multiplies a
+per-token cost of zero. **A cache hit could not have saved time here, whatever
+the routing did.** Arm A's 2.5× latency is its own scheduling overhead measured
+against a backend that is free: the worst possible case for it, and not a
+property of real serving.
+
+**The hit-ratio result stands.** It is a claim about the scheduler — where
+requests go and how often caches hit — and it never depended on latency. The
+latency columns need replacing rather than amending, which is what adopting one
+of the simulator's shipped latency profiles does. See
+[next-increments.md](../docs/next-increments.md).
 
 ## Results
 
@@ -106,8 +122,11 @@ Three replicas per role, `kv-cache-size 16` blocks, ~200-token personas,
 | **Hit ratio** | **82.6%** | **78.4%** |
 | Prompt tokens queried | 177,832 | 88,916 |
 | Cache hits | 146,816 | 69,696 |
-| Latency p50 | 13.4 ms | **5.4 ms** |
-| Latency p90 | 16.2 ms | 6.8 ms |
+| Latency p50 † | 13.4 ms | **5.4 ms** |
+| Latency p90 † | 16.2 ms | 6.8 ms |
+
+† **These two rows measure scheduling overhead against zero-cost backends, not
+serving latency.** Kept for the record, not for the conclusion — see above.
 
 **+4.2 points, where run 1 showed 0.5.** The mechanism is visible once the
 conditions exist for it to matter.
