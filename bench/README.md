@@ -750,3 +750,62 @@ baseline and meant nothing, because five of its six trials had never cached anyt
 Adding one condition — *refuse to score a trial whose warm-up did not warm* — turned a
 plausible fake result into a correct null plus a root cause. **A benchmark that cannot
 detect its own broken preconditions will report the baseline and look reasonable doing it.**
+
+---
+
+## Approx vs precise, with precise routing actually working, 2026-09-24
+
+The first A/B in which the precise arm's index is populated. Both arms use P/D
+(`epp-pd-values.yaml` against `epp-precise-values.yaml`), so the precise arm is the
+hybrid described in `docs/epp-scheduling.md`: the scorer reads the precise index, the P/D
+decider still reads an approximate one. Simulator image `pr668-seq0` on all six pods.
+`ab-bench.sh /v1/chat/completions 480 24 6`, caches cleared before every run, arms
+alternated.
+
+| order | arm | hit ratio | prefill pods with traffic | valid |
+|---|---|---|---|---|
+| 1 | approx | 84.31% | 2 of 3 | census `approx-` only |
+| 2 | precise | 83.39% | 3 of 3 | census both; 0 sequence errors, 0 failed connects |
+| 3 | approx | 84.19% | 3 of 3, near even | census `approx-` only |
+| 4 | precise | 83.93% | 3 of 3, near even | census both; 0 sequence errors, 0 failed connects |
+
+| arm | mean | spread between its two runs |
+|---|---|---|
+| approx | **84.25%** | 0.12 points |
+| precise | **83.66%** | 0.54 points |
+
+### Reading it
+
+**No hit-ratio gain from precise routing on this workload.** Approx is ahead by 0.6
+points on average and in both pairs. With two runs per arm that cannot be told apart
+from noise, so the result is "equal within about a point" — not "precise is worse".
+
+**The prefill-spread difference in the first pair did not repeat.** Run 3, approx, used
+all three prefill pods almost evenly. Consistent with "The repeat" above: distribution
+varies between identical runs, and nothing here compares it.
+
+**The fix holds under load.** At about 24 requests a second, the precise arm logged no
+`Joining mid-stream` / `incomplete replay` and no failed subscriber connection.
+
+**Where precise does win is not visible here.** The restart test (5 of 5 against 1 of 5,
+young pods) is the categorical difference. This benchmark measures steady-state cache
+locality, and on this workload the approximate index is already about as good.
+
+### Not comparable with the earlier runs in this document
+
+Every earlier run used simulator v0.11.2; these use `main` at `bf3f6a6` plus one line.
+That range is 43 commits and includes llm-d-inference-sim#709, *"evict prefix blocks
+tail-first"*, which changes what a 16-block cache keeps. The earlier approx runs sit at
+83.79–83.95% and these at 84.19–84.31%; the difference may be #709 and not routing.
+**Compare these four runs with each other only.**
+
+### An untested explanation for approx's small edge
+
+The simulator publishes KV events on a 1-second timer, so at 24 requests a second the
+precise index trails reality by roughly a second — about 24 requests. The approximate
+producer records a placement at routing time, so in a burst it knows immediately where
+the previous request went. `epp-precise-values.yaml` sets `speculativeIndexing: false`,
+and that option covers exactly this gap: the router v0.10.0 docs describe it as seeding
+predicted entries on routing decisions, evicted after `speculativeTTL` (default 2 s) —
+longer than the 1-second publish lag. If the lag is the cause, turning it on should close
+the gap. That is the next run.
