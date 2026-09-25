@@ -50,6 +50,18 @@ component that acts on the routing decision, a proxy sidecar in front of the dec
 was missing. The only evidence was a counter that did not exist on one pod.
 [How it was found →](docs/epp-scheduling.md#configured-is-not-operating)
 
+**Precise prefix-cache routing could not work against any released simulator, for two
+reasons in a row — both reported upstream from this lab.** The released simulator never
+opened the socket its cache events go out on
+([#735](https://github.com/llm-d/llm-d-inference-sim/issues/735); fixed on `main`, not
+released). With that fixed, the events arrived and the router dropped every one, because
+the simulator numbers them from 1 and vLLM from 0
+([#736](https://github.com/llm-d/llm-d-inference-sim/issues/736); a one-line fix is ready on
+the author's fork). Every layer reported success throughout; only the routing score, stuck
+at 0, said otherwise. With both fixed, precise routing survives a router restart 5 of 5
+times against 1 of 5 for the approximate index, and ties it on hit ratio.
+[In plain language →](docs/precise-routing-explained.md)
+
 **Smart routing costs 95 µs against a 23.8 ms time-to-first-token** — about 0.4% of the
 request. That ratio, not the absolute number, is what justifies putting a scheduler in the
 request path.
@@ -208,6 +220,7 @@ VM down, attaches, and starts it again — and why provisioning waits for the se
 |---|---|
 | [next-increments.md](docs/next-increments.md) | **What is planned next** — precise prefix-cache routing, what the original plan left unfinished, and the experiments this cluster is already equipped to run |
 | [reading-the-dashboard.md](docs/reading-the-dashboard.md) | **Each panel mapped to the decision it drives** — which weight to change, when to stop disaggregating, why replicas cannot fix a distribution fault |
+| [precise-routing-explained.md](docs/precise-routing-explained.md) | **Why precise routing did not work, in plain language** — what vLLM and the simulator do, the two defects, the P/D "hybrid", and the issues and fix sent upstream |
 | [epp-scheduling.md](docs/epp-scheduling.md) | The endpoint picker: profiles, weighted scorers, the P/D decider's arithmetic, and how "enabled" was not "operating" |
 | [postmortem-vagrant.md](docs/postmortem-vagrant.md) | Four wrong hypotheses, one `ioapic=off`, and the measurement that ended it |
 | [hyperv-migration-plan.md](docs/hyperv-migration-plan.md) | The migration, researched from provider source before a line was written |
