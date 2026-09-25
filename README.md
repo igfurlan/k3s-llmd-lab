@@ -225,7 +225,7 @@ VM down, attaches, and starts it again — and why provisioning waits for the se
 | [postmortem-vagrant.md](docs/postmortem-vagrant.md) | Four wrong hypotheses, one `ioapic=off`, and the measurement that ended it |
 | [hyperv-migration-plan.md](docs/hyperv-migration-plan.md) | The migration, researched from provider source before a line was written |
 | [model-backends.md](docs/model-backends.md) | Swapping the simulator for ollama or a hosted model |
-| [bench/README.md](bench/README.md) | The A/B experiment, both runs, including the null result |
+| [bench/README.md](bench/README.md) | Every measurement: prefix-aware vs round-robin (three runs, including the null result), the scorer-weight sweep and its retraction, the EPP restart test, and approx vs precise with and without P/D |
 
 ---
 
