@@ -91,7 +91,7 @@ load average 13–19 at 73% idle CPU against 0.03. [The postmortem →](docs/pos
 | [Inference Extension](https://github.com/kubernetes-sigs/gateway-api-inference-extension) | `v1.6.2` | `InferencePool` — CRDs that understand LLM traffic |
 | [agentgateway](https://agentgateway.dev) | `v1.5.0` | Gateway implementation. **Not v1.1.0** — it watches a `v1alpha2.TCPRoute` that Gateway API 1.6.2 no longer serves, so its informer blocks forever and the GatewayClass never registers |
 | llm-d router | `v0.10.0` | Endpoint picker + the P/D routing sidecar |
-| [llm-d-inference-sim](https://github.com/llm-d/llm-d-inference-sim) | `v0.11.2` | GPU-free vLLM stand-in, emitting vLLM's metric names |
+| [llm-d-inference-sim](https://github.com/llm-d/llm-d-inference-sim) | `main` @ `bf3f6a6` + 1 line, built locally (`pr668-seq0`) | GPU-free vLLM stand-in, emitting vLLM's metric names. Not a release: v0.11.2 cannot feed precise routing (see [epp-scheduling.md](docs/epp-scheduling.md#a-second-defect-behind-the-first-batches-are-numbered-from-1)). Results in `bench/` before 2026-09-24 used v0.11.2 |
 | vLLM (render) | `v0.21.0` | Tokenizer only — no weights, no GPU |
 | ollama | `0.34.3` | Real inference, `qwen2.5:0.5b` |
 | kube-prometheus-stack | latest | Prometheus + Grafana, trimmed for 6 GB nodes |
