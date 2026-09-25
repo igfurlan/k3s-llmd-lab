@@ -56,12 +56,13 @@ which pod holds which cached blocks, and it can build that index two ways:
 ```mermaid
 flowchart TB
     C[Client] --> R[Router / EPP]
-    R -->|request| P1[Pod 1]
-    R -->|request| P2[Pod 2]
-    R -->|request| P3[Pod 3]
-    P1 -. KV events, port 5556 .-> R
-    P2 -. KV events, port 5556 .-> R
-    P3 -. KV events, port 5556 .-> R
+    R -->|each request, to one pod| Pods
+    Pods -. KV events from every pod, port 5556 .-> R
+    subgraph Pods[Model-server pods]
+        P1[Pod 1]
+        P2[Pod 2]
+        P3[Pod 3]
+    end
 ```
 
 Each pod reports what it caches; the router routes a repeated prompt back to the pod that
