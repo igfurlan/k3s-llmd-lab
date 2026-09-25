@@ -1,0 +1,79 @@
+# Scraping the gateway itself.
+#
+# WHY THIS WAS THE LAST GAP
+#   Prometheus already scrapes the model servers (51-scrape-sims.yaml) and the
+#   endpoint picker (50-scrape-epp.yaml). The gateway -- the component EVERY
+#   request passes through first -- exported nothing to it.
+#
+#   That is the missing left-hand edge of every latency panel. TTFT was measured
+#   at the router, which cannot separate time spent IN the gateway from time
+#   spent waiting on the EPP from time spent in the model server. agentgateway
+#   measures all three itself:
+#
+#     agentgateway_request_processing_seconds     in the gateway, before upstream
+#     agentgateway_upstream_call_duration_seconds waiting on the backend
+#     agentgateway_request_duration_seconds       the whole thing
+#
+#   Subtracting those is the decomposition the dashboard has always implied and
+#   never been able to show.
+#
+# NO AUTHENTICATION, UNLIKE THE EPP
+#   agentgateway's /metrics is plain and unauthenticated, so this file is short.
+#   Compare 50-scrape-epp.yaml, which needs a ServiceAccount, a token, a Secret
+#   in the right namespace and a system:auth-delegator binding -- because the
+#   EPP protects its endpoint by delegating auth to the API server. Two
+#   components, two opposite defaults, in one namespace.
+#
+# WHY NOT THE CHART'S OWN PODMONITOR
+#   agentgateway's Helm chart ships one behind `monitoring.enabled=true`. Using
+#   it would mean a helm upgrade of the gateway to add monitoring, and the
+#   shipped template has a known defect: it omits `podTargetLabels`, so the
+#   gateway-name never reaches the series and the chart's own Grafana dashboard
+#   cannot filter by gateway (agentgateway/agentgateway#3420). Writing it here
+#   keeps every scrape config for this lab in one directory, and fixes that.
+#
+# VERIFY BEFORE TRUSTING THIS FILE
+#   The selector below is taken from agentgateway's documentation, not from this
+#   cluster. Confirm the label exists on the running proxy pod:
+#
+#     kubectl -n llm-d get pods --show-labels | grep -i gateway
+#
+#   And confirm the endpoint answers with a body -- a 200 with ZERO bytes means
+#   authenticated-and-refusing, which is exactly how the EPP presented:
+#
+#     GW=$(kubectl -n llm-d get pods -o name | grep -i gateway | grep -v epp | head -1 | cut -d/ -f2)
+#     IP=$(kubectl -n llm-d get pod "$GW" -o jsonpath='{.status.podIP}')
+#     kubectl -n llm-d exec deploy/render -- curl -s "http://$IP:15020/metrics" | head -20
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: agentgateway
+  namespace: llm-d
+  labels:
+    app.kubernetes.io/part-of: llm-d-lab
+spec:
+  selector:
+    matchLabels:
+      # Set by the agentgateway controller on every proxy pod it creates, to the
+      # name of the Gateway resource -- ours is `inference-gateway`, from
+      # 20-gateway.yaml. Selecting on the gateway NAME rather than on the
+      # gatewayClass means a second Gateway would not silently join this scrape.
+      gateway.networking.k8s.io/gateway-name: inference-gateway
+  podMetricsEndpoints:
+    # targetPort, not port, because 15020 may not be a NAMED port in the pod
+    # spec -- the controller generates these pods, so the name is not ours to
+    # rely on. A numeric targetPort works either way.
+    - targetPort: 15020
+      path: /metrics
+      # Matches the model servers, so gateway and backend series line up on the
+      # same panel without interpolation artefacts.
+      interval: 15s
+  # THE FIX FOR agentgateway#3420.
+  #
+  # Without this the pod's gateway-name label is dropped at scrape time, every
+  # series is anonymous, and a query cannot say WHICH gateway it is describing.
+  # Prometheus rewrites it to gateway_networking_k8s_io_gateway_name, which is
+  # the label agentgateway's own dashboard expects and which its shipped
+  # PodMonitor does not provide.
+  podTargetLabels:
+    - gateway.networking.k8s.io/gateway-name
