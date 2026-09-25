@@ -8,7 +8,64 @@ needs checking before it can be relied on, it is written as a check, not as a fa
 
 ---
 
+# Backlog at a glance
+
+Updated 2026-09-25. **This table is the thing to keep current** — the sections below hold
+the reasoning, but this is the list.
+
+### Done
+
+| | What came of it |
+|---|---|
+| Simulator latency profile (Part 3 §1) | Every latency parameter defaulted to **zero**, so a cache hit could not save time. Adopted upstream's `small-l40s-edge-per-token`. Corrected two published claims |
+| Precise prefix-cache routing (Part 1) | Works, on a locally built image. Found **two** upstream defects — [#735](https://github.com/llm-d/llm-d-inference-sim/issues/735) publisher never binds, [#736](https://github.com/llm-d/llm-d-inference-sim/issues/736) KV-event sequence starts at 1. Results in [bench/README.md](../bench/README.md) |
+| Scorer weight sweep (Part 3 §4) | The ratio does **not** move the hit ratio, at either load level. Ruled out reweighting by elimination |
+| EPP restart survival | approx retains 1 of 5 valid trials, at or below chance. The approximate index dies with its process |
+| agentgateway metrics (Part 2) | `manifests/monitoring/52-scrape-gateway.yaml`. Port `metrics`/15020, unauthenticated, verified 41 KB body |
+
+### Open
+
+| Priority | Item | Where | Size |
+|---|---|---|---|
+| **1** | **Gateway dashboard panels** — decompose latency into gateway / EPP / backend. Needs the real metric names confirmed first | below | S |
+| **2** | **Kill the EPP under load** — `failureMode: FailOpen` documented, never exercised | Part 3 §3 | S |
+| **3** | **Cache-size sweep** — find where prefix-aware routing stops beating round-robin | Part 3 §2 | S |
+| **4** | **Upstream topology (A4)** — `prefix-cache-affinity-filter` + `token-load-scorer`, `peakPrefillThroughput: 2857` | Part 1 A4 | M |
+| **5** | **Inference SLO alerting** — this lab has a dashboard and zero alert rules; musashi has nine | Part 3 §5 | M |
+| **6** | **Real vLLM beside the simulators** — one real pod in the pool, proving the EPP cannot tell them apart | Part 2 | M |
+| **7** | **Phase 8, a real case** — nothing yet sends real client traffic through the gateway | Part 2 | M |
+| **8** | **Multi-turn conversations** — the benchmark sends persona + one question; real chats grow the prompt | Part 3 §6 | S |
+| **9** | **Session-based routing** — how much of the benefit comes from a cookie hash? | Part 3 §7 | M |
+| **10** | **Predicted-latency routing** — viable now the backends cost real time | Part 3 §8 | M |
+| — | **Grafana loses its admin password** on restart. Accept and document, or give it a PVC | Part 2 | XS |
+
+### Watching, not doing
+
+- **[#735](https://github.com/llm-d/llm-d-inference-sim/issues/735) and [#736](https://github.com/llm-d/llm-d-inference-sim/issues/736)** — a release closing both replaces the locally built simulator image.
+- **[agentgateway#3420](https://github.com/agentgateway/agentgateway/issues/3420)** — the chart's own PodMonitor omits `podTargetLabels`. Ours does not; if they fix theirs, ours can go.
+
+### Standing rules earned the hard way
+
+- **Three runs minimum** before quoting any latency or pod-distribution number. Only the
+  hit ratio survived single-run scrutiny — identical configs produced 848 ms and 932 ms,
+  and 2 pods then 3.
+- **`helm upgrade` does not restart the EPP.** Plugin config is a ConfigMap, read once at
+  startup. Always `rollout restart` explicitly.
+- **Check the body, not the status code.** A 200 with zero bytes reads exactly like a
+  component that exports nothing.
+- **A benchmark that cannot detect its own broken preconditions** will report the chance
+  baseline and look reasonable doing it.
+
+---
+
 # Part 1 — Precise prefix-cache routing
+
+> **DONE**, 2026-09-24, on a locally built image (`pr668-seq0`) carrying both upstream
+> fixes. Two defects were found on the way and are filed upstream. Results and the full
+> narrative are in [bench/README.md](../bench/README.md) and
+> [precise-routing-explained.md](precise-routing-explained.md). The sections below are
+> kept as the record of how it was planned and what it cost. **A4 is still open** — see
+> the backlog table.
 
 ## What actually changes
 
@@ -537,3 +594,70 @@ latency to predict.
 | 5 | **Part 2** — agentgateway metrics | Small, and every latency panel improves. |
 
 Items 1 and 2 are a day. Items 3 and 4 are a day. Everything else is a menu.
+
+---
+
+# Added after the original plan
+
+Items that did not exist when this document was written, recorded so they are not lost.
+
+## Gateway latency decomposition — the panels the scrape unlocks
+
+`52-scrape-gateway.yaml` closes the last hole in the request path. What it buys is the
+decomposition the dashboard has always implied and never shown: **time in the gateway,
+time waiting on the EPP, time in the model server.**
+
+Before writing panels, confirm which metric families the running gateway actually emits.
+The first 30 lines of `/metrics` are xDS, tokio runtime and cgroup gauges — infrastructure,
+not request data. Request and `gen_ai` metrics may appear further down, or may only
+materialise once traffic of that type has flowed:
+
+```bash
+GW=$(kubectl -n llm-d get pods -o name | grep -i gateway | grep -v epp | head -1 | cut -d/ -f2)
+IP=$(kubectl -n llm-d get pod "$GW" -o jsonpath='{.status.podIP}')
+kubectl -n llm-d exec deploy/render -- curl -s "http://$IP:15020/metrics" \
+  | grep -E '^# (HELP|TYPE)' | grep -viE 'xds|tokio|cgroup|config_synchronized'
+```
+
+Documented as available, **unverified on this cluster**:
+
+| Metric | What it would give |
+|---|---|
+| `agentgateway_request_duration_seconds` | the whole request, measured at the front door |
+| `agentgateway_request_processing_seconds` | time inside the gateway before upstream |
+| `agentgateway_upstream_call_duration_seconds` | time waiting on the backend |
+| `agentgateway_gen_ai_server_time_to_first_token` | **TTFT measured at the gateway** — a second, independent view of the number the router reports |
+| `agentgateway_gen_ai_server_time_per_output_token` | decode rate |
+| `agentgateway_gen_ai_client_token_usage` | tokens in/out |
+
+The TTFT one is the interesting one: the lab would then have **two measurements of the
+same quantity from different vantage points.** Panels that agree are reassuring; panels
+that disagree are a finding.
+
+If the `gen_ai` family is absent, that is itself worth recording — it would mean the
+inference-aware metrics are a newer or build-gated feature, and the decomposition has to
+come from the generic request/upstream pair instead.
+
+## Finding Prometheus, for next time
+
+The StatefulSet is not named `prometheus-kube-prometheus-stack-prometheus`. Discover it
+rather than guessing:
+
+```bash
+kubectl -n monitoring get sts,svc | grep -i prometheus
+```
+
+Then query targets through the Service rather than exec-ing into a guessed pod:
+
+```bash
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090 &
+curl -sG 'http://localhost:9090/api/v1/targets' --data-urlencode 'state=active' \
+  | tr ',' '\n' | grep -iE 'agentgateway|health'
+```
+
+## Verify the PodMonitor is actually selected
+
+`podMonitorSelectorNilUsesHelmValues: false` means Prometheus takes every PodMonitor in
+every namespace, so no label wiring is needed — but confirm the target appears and is UP
+rather than assuming it did. An accepted `kubectl apply` says nothing about whether
+Prometheus agreed to scrape it.
