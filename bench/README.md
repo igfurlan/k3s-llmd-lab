@@ -809,3 +809,42 @@ and that option covers exactly this gap: the router v0.10.0 docs describe it as 
 predicted entries on routing decisions, evicted after `speculativeTTL` (default 2 s) —
 longer than the 1-second publish lag. If the lag is the cause, turning it on should close
 the gap. That is the next run.
+
+### The speculativeIndexing run: the lag explanation does not hold
+
+Same protocol, three more runs, continuing the alternation. The precise values file was
+copied with the one line flipped (`diff` showed exactly that line), and the rendered
+ConfigMap was checked to read `speculativeIndexing: true` before each precise run counted.
+
+| order | arm | hit ratio | prefill hit | decode hit | prefill pods with traffic |
+|---|---|---|---|---|---|
+| 5 | precise + speculative | 83.74% | 85.41% | 82.06% | 1 of 3 |
+| 6 | approx | 84.13% | 85.45% | 82.82% | 1 of 3 |
+| 7 | precise + speculative | 83.59% | 85.41% | 81.78% | 1 of 3 |
+
+| arm | runs | mean |
+|---|---|---|
+| approx | 1, 3, 6 | **84.21%** |
+| precise | 2, 4 | **83.66%** |
+| precise + speculative | 5, 7 | **83.66%** |
+
+**Speculative indexing changed nothing.** Its mean equals plain precise to two decimals.
+If the one-second publish lag were costing precise its hits, seeding entries at routing
+time would have recovered them. It did not, so the lag is not the explanation, and the
+cause of approx's edge is unknown.
+
+**The edge itself now looks real, if small.** All three approx runs sit above all four
+precise runs, with and without speculation. If the arms were equivalent, that ordering
+has a probability of 1 in 35 (0.029, one-sided rank test). Pooling the speculative runs
+with plain precise is a judgement call; against plain precise alone it is 1 in 10. About
+half a point, consistently in approx's favour, mechanism not identified.
+
+**In runs 5 to 7 the whole gap is on the decode side.** Prefill used a single pod in all
+three, and that pod's hits are within 64 tokens of each other (151,936 / 152,000 /
+151,936), so the 0.4-to-0.5-point difference comes from the decode pods. In runs 1 to 4
+precise trailed on both sides. Why the decode profile would do worse with a precise index
+is not established, and prefill collapsing to one pod in three runs straight is the same
+distribution noise recorded in "The repeat" above.
+
+**Robust under load, again.** Every precise run: no sequence errors, no failed subscriber
+connections.
