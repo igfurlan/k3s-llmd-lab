@@ -661,6 +661,39 @@ else, the control plane included. Build off-peak, and never in parallel with a b
 
 When a release carries both fixes, delete this section's build steps and pin the release.
 
+#### Router v0.11.0-rc.2: same behaviour, same result
+
+*Checked 2026-09-25, against the pre-release published 2026-09-21. The lab still runs
+v0.10.0.*
+
+The sequence logic in `pkg/kvevents/zmq_subscriber.go` is unchanged: a first sequence above
+0 still triggers a replay from 0, and the reply is still rejected unless its first batch is
+0. So the simulator fix is still needed with the next router release. The precise
+producer's parameters (`discoverPods`, `podDiscoveryConfig.socketPort`, `replaySocketPort`,
+`topicFilter`, `concurrency`) keep their names, and the gateway chart's `values.yaml` is
+identical, so this lab's values files apply unchanged.
+
+With the `pr668-seq0` simulator and the rc.2 EPP image, on the no-P/D path (precise
+producer, replay socket, no routing sidecar in the request path):
+
+| test | rc.2 | v0.10.0 |
+|---|---|---|
+| restart test, precise | 5 of 5 valid, 5 retained | 5 of 5 valid, 5 retained |
+| no-P/D precise load run | 82.32% (one run) | 82.35–82.96% (four runs) |
+| sequence errors / failed subscriber connections | 0 / 0 | 0 / 0 |
+
+P/D was not tested on rc.2: the routing sidecar is pinned separately in
+`manifests/11-sim-decode.yaml` (`llm-d-router-disagg-sidecar:v0.10.0`), and mixing an rc.2
+EPP with a v0.10.0 sidecar would confound any result.
+
+Rendering the chart with `epp-precise-values.yaml` at both versions differs in three places:
+the EPP image tag, a 5-second `preStop` sleep, and a new `checksum/config` annotation on the
+EPP's pod template. That annotation changes whenever the plugin config does, which should
+make `helm upgrade` roll the EPP on a config change by itself — removing the need for the
+explicit `rollout restart` that `epp-precise-values.yaml` insists on. That consequence is
+read from the rendered manifest, not tested here, and it does not apply to v0.10.0: until
+the lab moves to a release that has it, keep the explicit restart.
+
 ### What this means for this lab
 
 **Precise prefix-cache routing is not achievable here on a released simulator image.** Not
