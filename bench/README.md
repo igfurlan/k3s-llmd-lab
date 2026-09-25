@@ -848,3 +848,51 @@ distribution noise recorded in "The repeat" above.
 
 **Robust under load, again.** Every precise run: no sequence errors, no failed subscriber
 connections.
+
+### P/D off: the lead changes sides
+
+The remaining suspect was the hybrid. With P/D on, the precise arm's scorer places
+requests from the precise index while the P/D decider splits them using an approximate
+one, and the two can disagree (`docs/epp-scheduling.md`). The no-P/D configuration that
+`restart-test.sh` renders removes the decider and the handler, so the precise index is the
+router's only view. `prefill-filter` stays, so only the three prefill pods serve traffic
+and each run queries 177,892 tokens, half of a P/D run. **These numbers are not
+comparable with the P/D rows above; compare them only with each other.**
+
+Four alternated pairs, same workload, caches cleared before every run.
+
+| pair | approx | precise | precise − approx |
+|---|---|---|---|
+| 1 | 81.99% | 82.67% | +0.68 |
+| 2 | 82.53% | 82.71% | +0.18 |
+| 3 | 82.42% † | 82.35% | −0.07 |
+| 4 | 82.28% | 82.96% | +0.68 |
+| **mean** | **82.31%** | **82.67%** | **+0.37** |
+
+† The census for this run printed no producer line at all, so which config it ran is not
+confirmed. Its value sits among the other approx runs, and leaving it out changes neither
+conclusion below.
+
+Precise led in three of four pairs. Ranked together, an ordering at least this favourable
+to precise has a probability of about 0.057 if the arms were equivalent (one-sided rank
+test; the same with or without run †). Suggestive, not settled.
+
+Side by side:
+
+| mode | leader | gap | p |
+|---|---|---|---|
+| P/D on (precise scorer, approximate decider) | approx | 0.55 points | ≈ 0.029 |
+| P/D off (precise index only) | precise | 0.37 points | ≈ 0.057 |
+
+**The lead changes sides when the only thing that changes is whether two views of the
+cache are mixed.** That is what the hybrid explanation predicts. Both gaps are under a
+point and rest on 4 to 8 runs, so read it as a lean, not a measurement: with P/D off,
+precise is at least as good as approx and probably slightly better; with P/D on, mixing
+the views costs it about half a point.
+
+**Confirmed from measurement, not only from source:** none of the precise no-P/D runs shows
+`approx-prefix-cache-producer` in the plugin census. Without P/D nothing consumes the
+approximate producer's data key, so it is never auto-created. (The census counts
+themselves, 14 to 960 lines, only show which producer ran; they vary with log volume.)
+
+Every run: 480 of 480 ok, no sequence errors, no failed subscriber connections.
