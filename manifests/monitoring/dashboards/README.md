@@ -53,3 +53,67 @@ The `llm_d_ai_role` label comes from the PodMonitor's `podTargetLabels`, which
 copies the pod's `llm-d.ai/role` label onto each series (Prometheus replaces the
 dots and slashes with underscores). Without it, prefill and decode would be two
 anonymous pods and none of the by-role panels would be possible.
+
+## llm-d-gateway.json
+
+Provisioned the same way, with its own ConfigMap:
+
+```bash
+kubectl -n monitoring create configmap llm-d-gateway-dashboard \
+  --from-file=llm-d-gateway.json=$HOME/manifests/monitoring/dashboards/llm-d-gateway.json \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n monitoring label configmap llm-d-gateway-dashboard grafana_dashboard=1 --overwrite
+```
+
+| Row | Panels | What it answers |
+|---|---|---|
+| Decomposition | seconds per phase per request, ext_proc share of the request | Where does a request's time actually go? |
+| Cross-check | gateway's ext_proc p95 against the picker's own p95, request latency per arm | Do two independent observers of the same decision agree, and which arm is faster? |
+| Load | request rate per arm, shed counters | Is the right arm being driven, and is the front door refusing anything? |
+
+### Why this exists separately from llm-d-routing.json
+
+That dashboard answers *what the picker decided*. This one answers *what the
+request cost, and where*. They draw on different components — one reads the model
+servers and the endpoint picker, this one reads the gateway.
+
+The gateway is the only component that sees a whole request, and it labels its
+outbound calls by kind:
+
+```
+agentgateway_upstream_call_duration_seconds_count{kind="Policy",subtype="ExtProc"}  12104
+agentgateway_upstream_call_duration_seconds_count{kind="Primary",subtype="Http"}    12344
+```
+
+So the ext_proc round trip to the endpoint picker is its own series, separate
+from the call to the model server. **That makes the scheduling cost measurable
+from outside the scheduler** — the panel "two observers, one decision" plots the
+gateway's measurement against the picker's own, and a gap between them is network
+and gRPC overhead that neither component can see alone.
+
+The arithmetic in those two counters is also a free consistency check: 12,344 =
+12,104 + 240. Every InferencePool request made an ext_proc call, and the 240
+extra primary calls are exactly the round-robin control arm, which has no picker.
+
+### Two method notes, because both are easy to get wrong
+
+**Percentiles do not add.** A stacked chart of p95s is meaningless — the p95 of
+the parts is not the p95 of the whole. The decomposition panel therefore uses
+mean seconds per request (`rate(_sum) / rate(requests_total)`), where both series
+share one denominator and genuinely sum. Percentiles appear only on panels that
+describe what a caller feels, never on a stack.
+
+**`route` is what separates the arms.** `route="llm-d/sim-pool"` is the
+InferencePool path and `route="llm-d/sim-roundrobin"` is the control. Both arms
+can now sit on one panel over one time window, rather than being compared across
+two separate windows — which is how an earlier benchmark run managed to measure
+nothing at all.
+
+### What is not here
+
+agentgateway v1.5.0 on this cluster emits **no `gen_ai` metrics** — no
+time-to-first-token, no token counts. Those appear in upstream documentation but
+not in this build, so TTFT is still only measured at the router and there is no
+second opinion on it. If a later version adds them, this is the dashboard they
+belong on.

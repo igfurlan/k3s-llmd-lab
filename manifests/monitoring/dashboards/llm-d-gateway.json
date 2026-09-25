@@ -1,0 +1,174 @@
+{
+  "uid": "llm-d-gateway",
+  "title": "llm-d — Request Path",
+  "description": "Where a request's time actually goes, measured at the gateway rather than at the router. agentgateway labels its outbound calls by kind, so the ext_proc call to the endpoint picker and the call to the model server are separate series — which makes the scheduling cost measurable independently of the scheduler's own self-report.",
+  "tags": ["llm-d", "inference", "gateway", "k3s-llmd-lab"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "datasource",
+        "label": "Data source",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "What this shows",
+      "gridPos": { "h": 4, "x": 0, "y": 0, "w": 24 },
+      "options": {
+        "mode": "markdown",
+        "content": "The gateway is the only component that sees a whole request. It labels outbound calls `subtype=\"ExtProc\"` (the endpoint picker) and `kind=\"Primary\"` (the model server), so the scheduling decision can be timed **from outside the scheduler**. Panels are per-call means where they need to add up, and p95 where they describe what a caller feels — percentiles of parts do not sum to a percentile of the whole, so the two are never mixed on one panel."
+      }
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Where a request's time goes",
+      "description": "Seconds of each phase per request, stacked. Both series share one denominator — total requests — so they add up honestly; a stack of percentiles would not. This is the decomposition the routing dashboard implies and cannot show.",
+      "gridPos": { "h": 8, "x": 0, "y": 4, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 25, "showPoints": "auto", "pointSize": 8, "spanNulls": false, "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "endpoint picker (ext_proc)" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } } ] },
+          { "matcher": { "id": "byName", "options": "model server" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(agentgateway_upstream_call_duration_seconds_sum{subtype=\"ExtProc\"}[5m])) / sum(rate(agentgateway_requests_total[5m]))", "legendFormat": "endpoint picker (ext_proc)", "datasource": { "type": "prometheus", "uid": "${datasource}" } },
+        { "refId": "B", "expr": "sum(rate(agentgateway_upstream_call_duration_seconds_sum{kind=\"Primary\"}[5m])) / sum(rate(agentgateway_requests_total[5m]))", "legendFormat": "model server", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "What the scheduler costs, as a share of the request",
+      "description": "Total ext_proc time divided by total request time. This is the ratio that justifies putting a scheduler in the request path at all — the absolute number matters far less than this fraction. One series, so the title names it and no legend is needed.",
+      "gridPos": { "h": 8, "x": 12, "y": 4, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "auto", "pointSize": 8, "spanNulls": false },
+          "color": { "mode": "fixed", "fixedColor": "orange" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }, "tooltip": { "mode": "single", "sort": "none" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(agentgateway_upstream_call_duration_seconds_sum{subtype=\"ExtProc\"}[5m])) / sum(rate(agentgateway_request_duration_seconds_sum[5m]))", "legendFormat": "ext_proc share", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Scheduling cost — two observers, one decision",
+      "description": "The gateway timing the ext_proc call, against the endpoint picker timing itself. They measure the same decision from opposite sides, so the gap between them is network and gRPC overhead. Agreement is reassuring; a widening gap is a finding.",
+      "gridPos": { "h": 8, "x": 0, "y": 12, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "auto", "pointSize": 8, "spanNulls": false }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "gateway's view (p95)" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } } ] },
+          { "matcher": { "id": "byName", "options": "picker's own report (p95)" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(agentgateway_upstream_call_duration_seconds_bucket{subtype=\"ExtProc\"}[5m])))", "legendFormat": "gateway's view (p95)", "datasource": { "type": "prometheus", "uid": "${datasource}" } },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_d_epp_scheduler_e2e_duration_seconds_bucket[5m])))", "legendFormat": "picker's own report (p95)", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Request latency by arm (p95)",
+      "description": "The A/B experiment's two arms on one panel, from one source. /v1 goes through the endpoint picker; /rr goes to a plain Service and round-robins. Previously these could only be compared across separate time windows, which is how an earlier run measured nothing.",
+      "gridPos": { "h": 8, "x": 12, "y": 12, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "auto", "pointSize": 8, "spanNulls": false }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "llm-d/sim-pool" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }, { "id": "displayName", "value": "prefix-aware (InferencePool)" } ] },
+          { "matcher": { "id": "byName", "options": "llm-d/sim-roundrobin" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "text" } }, { "id": "displayName", "value": "round-robin (control)" } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, route) (rate(agentgateway_request_duration_seconds_bucket[5m])))", "legendFormat": "{{route}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Request rate by arm",
+      "description": "Which arm is receiving traffic. During a benchmark only one should be moving; both moving at once means the run is contaminated.",
+      "gridPos": { "h": 8, "x": 0, "y": 20, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "auto", "pointSize": 8, "spanNulls": false }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "llm-d/sim-pool" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }, { "id": "displayName", "value": "prefix-aware (InferencePool)" } ] },
+          { "matcher": { "id": "byName", "options": "llm-d/sim-roundrobin" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "text" } }, { "id": "displayName", "value": "round-robin (control)" } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (route) (rate(agentgateway_requests_total[5m]))", "legendFormat": "{{route}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Shed in the last hour",
+      "description": "Requests and connections the gateway refused because a limit was reached. These should be zero. Anything above zero means the front door is the bottleneck, not the model servers — a different problem with a different fix, and one no backend metric would reveal.",
+      "gridPos": { "h": 8, "x": 12, "y": 20, "w": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "textMode": "auto", "colorMode": "value", "graphMode": "area" },
+      "targets": [
+        { "refId": "A", "expr": "sum(increase(agentgateway_requests_shed_total[1h]))", "legendFormat": "requests shed", "datasource": { "type": "prometheus", "uid": "${datasource}" } },
+        { "refId": "B", "expr": "sum(increase(agentgateway_downstream_connections_shed_total[1h]))", "legendFormat": "connections shed", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    }
+  ]
+}
