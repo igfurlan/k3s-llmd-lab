@@ -619,40 +619,76 @@ kubectl -n llm-d exec deploy/render -- curl -s "http://$IP:15020/metrics" \
   | grep -E '^# (HELP|TYPE)' | grep -viE 'xds|tokio|cgroup|config_synchronized'
 ```
 
-Documented as available, **unverified on this cluster**:
+### What this build actually emits — read off the endpoint, 2026-09-25
 
-| Metric | What it would give |
-|---|---|
-| `agentgateway_request_duration_seconds` | the whole request, measured at the front door |
-| `agentgateway_request_processing_seconds` | time inside the gateway before upstream |
-| `agentgateway_upstream_call_duration_seconds` | time waiting on the backend |
-| `agentgateway_gen_ai_server_time_to_first_token` | **TTFT measured at the gateway** — a second, independent view of the number the router reports |
-| `agentgateway_gen_ai_server_time_per_output_token` | decode rate |
-| `agentgateway_gen_ai_client_token_usage` | tokens in/out |
+**The `gen_ai` family does not exist here.** No `agentgateway_gen_ai_server_time_to_first_token`,
+no time-per-output-token, no client token usage. Those appear in agentgateway's
+documentation but not in this build's `/metrics`, so the inference-aware metrics are a
+newer or build-gated feature. **There is no independent TTFT measurement at the gateway**,
+and the decomposition has to come from the generic request/upstream histograms.
 
-The TTFT one is the interesting one: the lab would then have **two measurements of the
-same quantity from different vantage points.** Panels that agree are reassuring; panels
-that disagree are a finding.
+What is present, with the help text verbatim:
 
-If the `gen_ai` family is absent, that is itself worth recording — it would mean the
-inference-aware metrics are a newer or build-gated feature, and the decomposition has to
-come from the generic request/upstream pair instead.
+| Metric | Type | Help text |
+|---|---|---|
+| `agentgateway_request_duration_seconds` | histogram | Duration of HTTP requests (seconds) |
+| `agentgateway_request_processing_seconds` | histogram | **Duration from receiving an HTTP request to sending the primary outbound call** |
+| `agentgateway_response_processing_seconds` | histogram | Duration from receiving the primary outbound response to sending the HTTP response |
+| `agentgateway_upstream_call_duration_seconds` | histogram | Duration of outbound calls made by agentgateway |
+| `agentgateway_upstream_connect_duration_seconds` | histogram | Duration to establish upstream connection |
+| `agentgateway_requests` | counter | The total number of HTTP requests sent |
+| `agentgateway_requests_shed` | counter | Downstream requests rejected by the in-flight request limit |
+| `agentgateway_downstream_connections` / `_shed` | counter | connections established / closed by the limit |
+| `agentgateway_response_bytes`, `_downstream_received_bytes`, `_downstream_sent_bytes` | counter | byte volumes |
 
-## Finding Prometheus, for next time
+Plus `agentgateway_build` (info), and a large family of `agentgateway_process_*` memory
+gauges — rss, pss, swap, hugepages and so on — which are process introspection rather than
+request data.
 
-The StatefulSet is not named `prometheus-kube-prometheus-stack-prometheus`. Discover it
-rather than guessing:
+### The decomposition this gives, and the one open question
 
-```bash
-kubectl -n monitoring get sts,svc | grep -i prometheus
+`request_processing_seconds` is *"from receiving an HTTP request to sending the primary
+outbound call"*. **The ext_proc round trip to the endpoint picker happens inside that
+window**, which makes it the scheduling cost measured from the gateway's side — an
+independent check on the EPP's own 95 µs self-report. Two components timing the same
+decision; disagreement would be a finding.
+
+So, roughly:
+
+```
+request_duration_seconds
+  ≈ request_processing_seconds      gateway + the EPP decision
+  + upstream_call_duration_seconds  the model server
+  + response_processing_seconds     gateway, on the way back
 ```
 
-Then query targets through the Service rather than exec-ing into a guessed pod:
+**Open question before writing panels: what labels do these histograms carry?**
+`upstream_call_duration_seconds` is *"outbound calls"* — and the ext_proc call to the EPP
+is itself an outbound call. If the series are labelled by target, the EPP call and the
+backend call can be separated and the decomposition is clean. If not,
+`upstream_call_duration_seconds` conflates the two and only the coarser split is
+available. Check with:
 
 ```bash
-kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090 &
-curl -sG 'http://localhost:9090/api/v1/targets' --data-urlencode 'state=active' \
-  | tr ',' '\n' | grep -iE 'agentgateway|health'
+kubectl -n llm-d exec deploy/render -- curl -s "http://$IP:15020/metrics" \
+  | grep -E '^agentgateway_(requests|upstream_call_duration_seconds_count|request_processing_seconds_count)\{'
+```
+
+### Prometheus, for real this time
+
+The Helm release is named `monitoring`, not `kube-prometheus-stack`:
+
+```
+statefulset.apps/prometheus-monitoring-kube-prometheus-prometheus
+service/monitoring-kube-prometheus-prometheus   9090/TCP, 8080/TCP
+```
+
+Query it from inside the cluster rather than port-forwarding:
+
+```bash
+kubectl -n llm-d exec deploy/render -- curl -s \
+  "http://monitoring-kube-prometheus-prometheus.monitoring:9090/api/v1/targets?state=active" \
+  | tr ',' '\n' | grep -iE 'agentgateway|"health"'
 ```
 
 ## Verify the PodMonitor is actually selected
