@@ -54,15 +54,14 @@ which pod holds which cached blocks, and it can build that index two ways:
 ## How precise routing is supposed to work
 
 ```mermaid
-flowchart TB
-    C[Client] --> R[Router / EPP]
-    R -->|each request, to one pod| Pods
-    Pods -. KV events from every pod, port 5556 .-> R
-    subgraph Pods[Model-server pods]
-        P1[Pod 1]
-        P2[Pod 2]
-        P3[Pod 3]
-    end
+sequenceDiagram
+    participant C as Client
+    participant R as Router (EPP)
+    participant P as Pods 1, 2 and 3
+    P-->>R: KV events, port 5556: "I now hold these blocks"
+    Note over R: index of which pod holds what
+    C->>R: request
+    R->>P: to the one pod that holds its prefix
 ```
 
 Each pod reports what it caches; the router routes a repeated prompt back to the pod that
