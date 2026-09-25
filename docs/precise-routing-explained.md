@@ -54,7 +54,7 @@ which pod holds which cached blocks, and it can build that index two ways:
 ## How precise routing is supposed to work
 
 ```mermaid
-flowchart LR
+flowchart TB
     C[Client] --> R[Router / EPP]
     R -->|request| P1[Pod 1]
     R -->|request| P2[Pod 2]
@@ -144,7 +144,7 @@ the router quietly creates an approximate index just for it. One request, two vi
 cache:
 
 ```mermaid
-flowchart LR
+flowchart TB
     Q[Request] --> D["1. P/D decider<br/>split or not?"]
     D --> SC["2. Prefix-cache scorer<br/>which pod?"]
     A["Approximate index<br/>router's own routing history"] -. reads .-> D
