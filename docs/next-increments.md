@@ -30,6 +30,7 @@ the reasoning, but this is the list.
 | **1** | **Gateway dashboard panels** — decompose latency into gateway / EPP / backend. Needs the real metric names confirmed first | below | S |
 | **2** | **Kill the EPP under load** — `failureMode: FailOpen` documented, never exercised | Part 3 §3 | S |
 | **3** | **Cache-size sweep** — find where prefix-aware routing stops beating round-robin | Part 3 §2 | S |
+| **3.5** | **Flux for GitOps** — the cluster reconciles from git instead of `vagrant upload` + `kubectl apply`. Flux rather than Argo *on purpose*: musashi runs Argo CD, so this gives both tools across the two labs | below | M |
 | **4** | **Upstream topology (A4)** — `prefix-cache-affinity-filter` + `token-load-scorer`, `peakPrefillThroughput: 2857` | Part 1 A4 | M |
 | **5** | **Inference SLO alerting** — this lab has a dashboard and zero alert rules; musashi has nine | Part 3 §5 | M |
 | **6** | **Real vLLM beside the simulators** — one real pod in the pool, proving the EPP cannot tell them apart | Part 2 | M |
@@ -697,3 +698,109 @@ kubectl -n llm-d exec deploy/render -- curl -s \
 every namespace, so no label wiring is needed — but confirm the target appears and is UP
 rather than assuming it did. An accepted `kubectl apply` says nothing about whether
 Prometheus agreed to scrape it.
+
+---
+
+# Flux — GitOps for this cluster
+
+Recorded 2026-09-26. It had been discussed and never written down, which is exactly how
+something gets lost.
+
+## Why Flux and not Argo CD
+
+**Because musashi already runs Argo CD and Argo Rollouts.** Using the same tool twice
+proves nothing; using the other one means the two labs together cover both major GitOps
+implementations, and the comparison becomes something answerable from experience rather
+than from documentation — reconciliation model, Helm handling, secret handling, what each
+one does when the cluster and git disagree.
+
+It also fits this cluster better on one axis: Flux has no UI to speak of, and this lab has
+already decided Grafana's UI is never the only copy. A controller that reads git and
+nothing else is consistent with that.
+
+## What it would replace
+
+Today every manifest reaches the cluster the same way:
+
+```bash
+vagrant upload manifests /home/vagrant/manifests k3s-server
+kubectl apply -f ~/manifests/...
+```
+
+That is the weakest operational part of the lab. The README already argues the manifests
+live in git "so that a rebuilt cluster is a `vagrant up` plus an apply, not an archaeology
+exercise" — Flux finishes that sentence by removing the apply.
+
+## The part that is actually work: the Helm releases
+
+The `InferencePool` and endpoint picker are **not** manifests. They come from an OCI Helm
+chart applied by hand:
+
+```bash
+helm upgrade -i sim-pool oci://ghcr.io/llm-d/charts/llm-d-router-gateway \
+  --version v0.10.0 --namespace llm-d -f ~/manifests/epp-precise-values.yaml
+```
+
+Under Flux that becomes a `HelmRepository` of `type: oci` plus a `HelmRelease` carrying the
+values inline or from a ConfigMap. Same for agentgateway and kube-prometheus-stack, which
+are also hand-installed charts. Three chart installs to convert, and OCI repositories are
+the fiddly case — worth expecting a session on that alone.
+
+**One thing Flux fixes for free:** `helm upgrade` does not restart the EPP, because plugin
+config lands in a ConfigMap that the EPP reads once at startup. That has cost this project
+real time twice. Flux can be told to roll the Deployment when the ConfigMap changes, which
+turns a recurring manual step into a property of the system.
+
+## The tension worth resolving before starting
+
+**GitOps assumes one desired state. This lab deliberately has several.**
+
+`manifests/` currently holds `epp-values.yaml`, `epp-pd-values.yaml`,
+`epp-precise-values.yaml`, `epp-sweep-values.yaml.tmpl` and `epp-nopd-values.yaml.tmpl` —
+five competing configurations, swapped by `bench/weight-sweep.sh` and
+`bench/restart-test.sh` mid-experiment. A reconciler would fight that: the sweep script
+changes the release, Flux notices drift and changes it back, and the benchmark measures
+whichever won.
+
+Three ways out, and the choice should be made deliberately rather than discovered:
+
+1. **Flux owns the baseline; experiments suspend it.** `flux suspend hr sim-pool` before a
+   sweep, `flux resume` after. Simple, and the suspend/resume becomes part of the
+   experiment protocol — which is arguably an improvement, since it makes "the cluster is
+   deliberately off-spec right now" explicit.
+2. **Flux owns everything except the EPP release.** The stack reconciles; the component
+   under experiment stays manual. Honest, and slightly unsatisfying.
+3. **Each experiment is a git branch.** Purest GitOps, worst ergonomics for a sweep of four
+   points.
+
+(1) is probably right. Whichever is chosen, **write down why** — a reader who sees
+`flux suspend` in a benchmark script deserves to know it is intentional.
+
+## Secrets, which this lab currently dodges
+
+Two credentials are deliberately not in git: the k3s join token (generated into a
+gitignored file) and Grafana's admin password (set in the UI, never committed, and
+therefore lost on every pod restart — see the Grafana item above).
+
+Flux plus SOPS with an age key would let both be committed **encrypted**, which fixes the
+Grafana password permanently instead of documenting it as a known annoyance. That is a
+genuinely better answer than a PVC, and it is the standard pattern rather than something
+invented here.
+
+## Rough sequence
+
+| | Step |
+|---|---|
+| 1 | `flux bootstrap github` against `igfurlan/k3s-llmd-lab`, or a separate ops repo if mixing lab code and cluster state feels wrong |
+| 2 | Move the plain manifests — namespace, render, simulators, gateway, ollama, the round-robin control, the monitoring scrape configs and dashboards — into a `Kustomization` |
+| 3 | Convert the three Helm installs to `HelmRepository` + `HelmRelease`, OCI last |
+| 4 | Decide and document the experiment/reconciliation policy above |
+| 5 | SOPS + age for the join token and the Grafana password |
+| 6 | Prove it: delete something Flux owns and watch it come back. A GitOps install that has never been tested by deleting a resource is a control plane nobody has confirmed is operating — the same failure mode as the P/D sidecar and the KV-events socket |
+
+## What this is not
+
+Not a prerequisite for anything else in this backlog. Every experiment above runs fine
+against hand-applied manifests. This is an operations increment and a portfolio one — it
+makes the lab reproducible by a stranger, and it lets the two labs together say something
+about Argo *and* Flux rather than only one of them.
